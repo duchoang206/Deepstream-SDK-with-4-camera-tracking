@@ -6,6 +6,9 @@ WORKDIR /app
 # Install wget
 RUN apt-get update && apt-get install -y wget git build-essential libglib2.0-dev libglib2.0-dev-bin libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /opt/nvidia/deepstream/deepstream/sources
+RUN git clone https://github.com/marcoslucianops/DeepStream-Yolo.git
+
 # Download and extract mediamtx to /opt/mediamtx
 WORKDIR /opt/mediamtx
 RUN wget https://github.com/bluenviron/mediamtx/releases/download/v1.8.2/mediamtx_v1.8.2_linux_amd64.tar.gz && \
