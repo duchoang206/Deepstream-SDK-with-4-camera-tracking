@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y wget git build-essential libglib2.0-dev
 WORKDIR /opt/nvidia/deepstream/deepstream/sources
 RUN git clone https://github.com/marcoslucianops/DeepStream-Yolo.git
 
+WORKDIR /opt/nvidia/deepstream/deepstream/sources/DeepStream-Yolo
+RUN CUDA_VER=12.2 make -C nvdsinfer_custom_impl_Yolo
+
 # Download and extract mediamtx to /opt/mediamtx
 WORKDIR /opt/mediamtx
 RUN wget https://github.com/bluenviron/mediamtx/releases/download/v1.8.2/mediamtx_v1.8.2_linux_amd64.tar.gz && \
