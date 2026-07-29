@@ -4,7 +4,7 @@ FROM nvcr.io/nvidia/deepstream:7.0-triton-multiarch
 WORKDIR /app
 
 # Install wget
-RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y wget git build-essential libglib2.0-dev libglib2.0-dev-bin libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev && rm -rf /var/lib/apt/lists/*
 
 # Download and extract mediamtx to /opt/mediamtx
 WORKDIR /opt/mediamtx
