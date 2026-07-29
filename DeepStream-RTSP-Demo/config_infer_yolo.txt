@@ -5,3 +5,5 @@ onnx-file=models/best.onnx
 model-engine-file=models/best_b4_gpu0_fp16.engine
 labelfile-path=models/labels.txt
 batch-size=4
+network-mode=2
+num-detected-classes=5
