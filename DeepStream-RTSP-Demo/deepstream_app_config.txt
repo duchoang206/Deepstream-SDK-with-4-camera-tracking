@@ -55,7 +55,7 @@ nvbuf-memory-type=0
 [primary-gie]
 enable=1
 gpu-id=0
-config-file=/opt/nvidia/deepstream/deepstream-7.0/samples/configs/deepstream-app/config_infer_primary.txt
+config-file=config_infer_yolo.txt
 batch-size=4
 bbox-border-color0=1;0;0;1
 bbox-border-color1=0;1;1;1
