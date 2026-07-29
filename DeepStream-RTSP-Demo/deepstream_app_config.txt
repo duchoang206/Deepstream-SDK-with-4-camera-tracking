@@ -6,8 +6,8 @@ perf-measurement-interval-sec=5
 enable=1
 rows=2
 columns=2
-width=1280
-height=720
+width=1920
+height=1080
 gpu-id=0
 nvbuf-memory-type=0
 
@@ -33,7 +33,7 @@ num-sources=1
 [source2]
 enable=1
 type=4
-uri=rtsp://admin:rtc%402025@192.168.5.241:554/Streaming/Channels/101
+uri=rtsp://admin:rtc%401234@192.168.5.241:554/Streaming/Channels/101
 num-sources=1
 
 [source3]
@@ -55,6 +55,7 @@ nvbuf-memory-type=0
 [primary-gie]
 enable=1
 gpu-id=0
+config-file=/opt/nvidia/deepstream/deepstream-7.0/samples/configs/deepstream-app/config_infer_primary.txt
 model-engine-file=/opt/nvidia/deepstream/deepstream-7.0/samples/models/Primary_Detector/resnet18_trafficcamnet.etlt_b30_gpu0_int8.engine
 labelfile-path=/opt/nvidia/deepstream/deepstream-7.0/samples/models/Primary_Detector/labels.txt
 batch-size=4
@@ -65,6 +66,7 @@ bbox-border-color3=0;1;0;1
 interval=0
 gie-unique-id=1
 nvbuf-memory-type=0
+
 
 [tracker]
 enable=1
@@ -98,3 +100,14 @@ type=2
 sync=0
 gpu-id=0
 nvbuf-memory-type=0
+
+[sink1]
+enable=1
+type=4
+# 1=h264 2=h265
+codec=1
+sync=0
+bitrate=4000000
+# set below properties in case of RTSPStreaming
+rtsp-port=8554
+udp-port=5400

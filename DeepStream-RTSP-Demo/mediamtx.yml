@@ -1,0 +1,14 @@
+# Minimal MediaMTX Configuration - Only WebRTC enabled
+rtsp: no
+rtmp: no
+hls: no
+srt: no
+
+webrtc: yes
+webrtcAddress: :8081
+webrtcICEUDPMuxAddress: :18189
+webrtcICETCPMuxAddress: :18189
+
+paths:
+  ds-test:
+    source: rtsp://127.0.0.1:8554/ds-test
