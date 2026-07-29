@@ -14,3 +14,5 @@ network-type=0
 cluster-mode=2
 maintain-aspect-ratio=1
 symmetric-padding=1
+parse-bbox-func-name=NvDsInferParseYolo
+custom-lib-path=/opt/nvidia/deepstream/deepstream/sources/DeepStream-Yolo/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
