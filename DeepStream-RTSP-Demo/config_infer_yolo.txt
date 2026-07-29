@@ -1,3 +1,4 @@
 [property]
 gpu-id=0
 net-scale-factor=0.0039215697906911373
+onnx-file=models/best.onnx
