@@ -78,7 +78,7 @@ enable-past-frame=1
 display-tracking-id=1
 
 [osd]
-enable=1
+enable=0
 gpu-id=0
 border-width=1
 text-size=15
@@ -94,13 +94,13 @@ nvbuf-memory-type=0
 
 [sink0]
 enable=1
-type=2
+type=1
 sync=0
 gpu-id=0
 nvbuf-memory-type=0
 
 [sink1]
-enable=1
+enable=0
 type=4
 # 1=h264 2=h265
 codec=1
