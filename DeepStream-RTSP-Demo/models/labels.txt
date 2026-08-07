@@ -1,5 +1,0 @@
-person
-pallet
-agv
-amr
-rack

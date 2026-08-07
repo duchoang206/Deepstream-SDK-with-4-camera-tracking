@@ -1,0 +1,98 @@
+export const translations = {
+  en: {
+    nav: {
+      monitor: 'Monitor',
+      building: 'Building',
+      operation: 'Operation',
+      analytics: 'Analytics',
+    },
+    header: {
+      alerts: 'Alerts',
+      documents: 'Documents',
+      language: 'Language',
+      profile: 'Profile',
+      brand: 'VMS',
+    },
+    monitor: {
+      noCamera: 'No active cameras. Please add a camera in the Building tab.',
+    },
+    building: {
+      title: 'Camera Infrastructure',
+      config: 'Config',
+      registerTitle: 'Register New RTSP Stream',
+      camNameLabel: 'Camera Name (Location)',
+      camNamePlaceholder: 'e.g. Cam 1 (Main Hall)',
+      rtspUrlLabel: 'RTSP URL Source',
+      rtspUrlPlaceholder: 'rtsp://admin:pass@ip:554/stream',
+      addStreamBtn: '+ Add Stream',
+      activeCameras: 'Active Cameras',
+      noCameras: 'No cameras registered. Add one above to start AI monitoring.',
+      colId: 'ID',
+      colName: 'Camera Name',
+      colUrl: 'RTSP Stream URL',
+      colStatus: 'Status',
+      colAction: 'Action',
+      statusLive: 'Live',
+      btnRemove: 'Remove',
+    },
+    analytics: {
+      title: 'System Statistics Dashboard',
+      desc: 'The intrusion statistics feature will be developed here.',
+      totalObjects: 'Total Objects Detected',
+      activeCameras: 'Active Cameras',
+      totalAlerts: 'Total Alerts',
+      systemAccuracy: 'System Accuracy',
+      objectTypes: 'Object Types Distribution',
+      alertsOverTime: 'Alerts Over Time',
+    }
+  },
+  vi: {
+    nav: {
+      monitor: 'Giám sát',
+      building: 'Tòa nhà',
+      operation: 'Vận hành',
+      analytics: 'Thống kê',
+    },
+    header: {
+      alerts: 'Thông báo',
+      documents: 'Tài liệu',
+      language: 'Ngôn ngữ',
+      profile: 'Hồ sơ',
+      brand: 'VMS',
+    },
+    monitor: {
+      noCamera: 'Không có camera nào đang hoạt động. Vui lòng thêm Camera ở tab Building.',
+    },
+    building: {
+      title: 'Hạ tầng Camera',
+      config: 'Cấu hình',
+      registerTitle: 'Đăng ký luồng RTSP mới',
+      camNameLabel: 'Tên Camera (Vị trí)',
+      camNamePlaceholder: 'VD: Cam 1 (Sảnh chính)',
+      rtspUrlLabel: 'Nguồn URL RTSP',
+      rtspUrlPlaceholder: 'rtsp://admin:pass@ip:554/stream',
+      addStreamBtn: '+ Thêm Luồng',
+      activeCameras: 'Camera Đang Hoạt Động',
+      noCameras: 'Chưa có camera nào được đăng ký. Thêm ở trên để bắt đầu giám sát AI.',
+      colId: 'Mã ID',
+      colName: 'Tên Camera',
+      colUrl: 'Đường dẫn RTSP',
+      colStatus: 'Trạng thái',
+      colAction: 'Hành động',
+      statusLive: 'Trực tiếp',
+      btnRemove: 'Xóa',
+    },
+    analytics: {
+      title: 'Bảng Thống Kê Hệ Thống',
+      desc: 'Tính năng thống kê số liệu xâm lấn sẽ được phát triển tại đây.',
+      totalObjects: 'Tổng Vật Thể Phát Hiện',
+      activeCameras: 'Camera Hoạt Động',
+      totalAlerts: 'Tổng Cảnh Báo',
+      systemAccuracy: 'Độ Chính Xác',
+      objectTypes: 'Phân Bổ Loại Vật Thể',
+      alertsOverTime: 'Cảnh Báo Theo Thời Gian',
+    }
+  }
+};
+
+export type Language = 'en' | 'vi';

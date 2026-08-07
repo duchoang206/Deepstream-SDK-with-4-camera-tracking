@@ -1,0 +1,107 @@
+import threading
+import time
+from ultralytics import YOLO
+from core.rtsp_reader import RTSPLatestFrameReader
+from core.intrusion_logic import IntrusionDetector
+from core.circular_logger import CircularLogger
+from core.database import db_manager
+
+class YOLOEngine:
+    """
+    Background worker that runs YOLOv8 inference on a given camera stream.
+    Checks for intrusions based on configured ROIs.
+    """
+    def __init__(self, cam_id: str, rtsp_url: str, logger: CircularLogger, target_fps=15):
+        self.cam_id = cam_id
+        self.rtsp_url = rtsp_url
+        self.target_fps = target_fps
+        self.sleep_time = 1.0 / target_fps
+        self.logger = logger
+        
+        # Initialize YOLO model (nano model for speed)
+        self.model = YOLO("yolov8n.pt") 
+        
+        # The classes we care about (e.g., 2: car, 3: motorcycle, 5: bus, 7: truck)
+        self.target_classes = [2, 3, 5, 7]
+        
+        self.rtsp_reader = RTSPLatestFrameReader(rtsp_url, cam_id)
+        self.intrusion_detector = IntrusionDetector()
+        
+        # ROIs map: { roi_id: shapely.Polygon }
+        self.rois = {}
+        # ROI status map: { roi_id: "Carfull" / "Empty" }
+        self.roi_status = {}
+        
+        self.running = True
+        self.thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self.thread.start()
+
+    def update_rois(self, rois_config: list):
+        """
+        Update the polygons to check against.
+        rois_config: List of dicts [{"id": "roi_1", "points": [[x,y], ...]}]
+        """
+        new_rois = {}
+        for r in rois_config:
+            if len(r["points"]) >= 3:
+                new_rois[r["id"]] = self.intrusion_detector.create_polygon(r["points"])
+                if r["id"] not in self.roi_status:
+                    self.roi_status[r["id"]] = "Empty"
+        self.rois = new_rois
+
+    def _inference_loop(self):
+        while self.running:
+            start_time = time.time()
+            
+            ret, frame = self.rtsp_reader.get_latest_frame()
+            if ret and frame is not None and len(self.rois) > 0:
+                # Run YOLO inference
+                results = self.model(frame, verbose=False, classes=self.target_classes)
+                
+                # Check each ROI
+                current_status = {roi_id: "Empty" for roi_id in self.rois.keys()}
+                
+                # To track class counts for detections
+                class_counts = {
+                    "car": 0, "motorcycle": 0, "bus": 0, "truck": 0
+                }
+                
+                for result in results:
+                    boxes = result.boxes.xyxy.cpu().numpy() # [x1, y1, x2, y2]
+                    cls_ids = result.boxes.cls.cpu().numpy()
+                    
+                    for box, cls_id in zip(boxes, cls_ids):
+                        class_name = self.model.names[int(cls_id)]
+                        if class_name in class_counts:
+                            class_counts[class_name] += 1
+                            
+                        # Check this box against all ROIs
+                        for roi_id, polygon in self.rois.items():
+                            if self.intrusion_detector.check_intrusion_bbox(box, polygon):
+                                current_status[roi_id] = "Carfull"
+                
+                # Log detections to DB
+                if any(count > 0 for count in class_counts.values()):
+                    db_manager.log_detections(self.cam_id, class_counts)
+                
+                # Update status and log changes
+                for roi_id, status in current_status.items():
+                    if status != self.roi_status.get(roi_id):
+                        self.roi_status[roi_id] = status
+                        self.logger.log_event(self.cam_id, roi_id, status)
+                        db_manager.log_event(self.cam_id, roi_id, status)
+                        print(f"[{self.cam_id}] ROI {roi_id} changed to {status}")
+                        
+            # Sleep to maintain target FPS (simulate wait for next frame)
+            process_time = time.time() - start_time
+            sleep_duration = max(0, self.sleep_time - process_time)
+            time.sleep(sleep_duration)
+
+    def get_status(self):
+        return self.roi_status
+
+    def stop(self):
+        self.running = False
+        self.rtsp_reader.stop()
+        if self.thread.is_alive():
+            self.thread.join(timeout=2)

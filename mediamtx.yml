@@ -1,0 +1,18 @@
+# Minimal MediaMTX Configuration - Only WebRTC enabled
+rtsp: no
+rtmp: no
+hls: no
+srt: no
+
+api: yes
+apiAddress: :9997
+
+webrtc: yes
+webrtcAddress: :8081
+webrtcICEUDPMuxAddress: :18189
+webrtcICETCPMuxAddress: :18189
+
+paths:
+  # Paths will be dynamically added via API by FastAPI Backend
+  # Empty paths block to allow dynamic addition
+
