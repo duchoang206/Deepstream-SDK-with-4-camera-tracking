@@ -15,6 +15,7 @@ export const translations = {
     },
     monitor: {
       noCamera: 'No active cameras. Please add a camera in the Building tab.',
+      allCamera: 'All Camera',
     },
     building: {
       title: 'Camera Infrastructure',
@@ -62,6 +63,7 @@ export const translations = {
     },
     monitor: {
       noCamera: 'Không có camera nào đang hoạt động. Vui lòng thêm Camera ở tab Building.',
+      allCamera: 'Camera Tổng',
     },
     building: {
       title: 'Hạ tầng Camera',

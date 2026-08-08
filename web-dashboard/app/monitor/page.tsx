@@ -43,7 +43,7 @@ export default function MonitorPage() {
       {/* Sub Header for Tools */}
       <div className="sub-header">
         <div className="sub-tabs">
-          <button className={`sub-tab ${activeTab === 'all' ? 'active' : ''}`} onClick={() => setActiveTab('all')}>Camera Tổng</button>
+          <button className={`sub-tab ${activeTab === 'all' ? 'active' : ''}`} onClick={() => setActiveTab('all')}>{t.monitor.allCamera}</button>
           {cameras.map(cam => (
             <button key={cam.id} className={`sub-tab ${activeTab === cam.id ? 'active' : ''}`} onClick={() => setActiveTab(cam.id)}>
               {cam.name}
