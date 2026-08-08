@@ -16,6 +16,7 @@ class RTSPLatestFrameReader:
         
         # Initialize video capture
         self.cap = cv2.VideoCapture(self.rtsp_url)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
         # Queue that holds maximum 1 frame
         self.frame_queue = queue.Queue(maxsize=1) 
@@ -31,6 +32,7 @@ class RTSPLatestFrameReader:
             if not self.cap.isOpened():
                 print(f"[{self.cam_id}] Reconnecting to RTSP stream...")
                 self.cap = cv2.VideoCapture(self.rtsp_url)
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 time.sleep(2)
                 
                 attempts += 1

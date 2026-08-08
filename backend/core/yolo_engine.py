@@ -21,8 +21,8 @@ class YOLOEngine:
         # Initialize YOLO model (nano model for speed)
         self.model = YOLO("yolov8n.pt") 
         
-        # The classes we care about (e.g., 2: car, 3: motorcycle, 5: bus, 7: truck)
-        self.target_classes = [2, 3, 5, 7]
+        # Default classes if none configured
+        self.default_classes = [2, 3, 5, 7]
         
         self.rtsp_reader = RTSPLatestFrameReader(rtsp_url, cam_id)
         self.intrusion_detector = IntrusionDetector()
@@ -44,7 +44,10 @@ class YOLOEngine:
         new_rois = {}
         for r in rois_config:
             if len(r["points"]) >= 3:
-                new_rois[r["id"]] = self.intrusion_detector.create_polygon(r["points"])
+                new_rois[r["id"]] = {
+                    "polygon": self.intrusion_detector.create_polygon(r["points"]),
+                    "target_objects": [t.lower() for t in r.get("target_objects", [])]
+                }
                 if r["id"] not in self.roi_status:
                     self.roi_status[r["id"]] = "Empty"
         self.rois = new_rois
@@ -55,30 +58,48 @@ class YOLOEngine:
             
             ret, frame = self.rtsp_reader.get_latest_frame()
             if ret and frame is not None and len(self.rois) > 0:
+                img_h, img_w = frame.shape[:2]
+                
+                # Dynamically determine target classes based on ROIs
+                target_classes = set()
+                for roi_data in self.rois.values():
+                    for obj in roi_data["target_objects"]:
+                        for idx, name in self.model.names.items():
+                            if name.lower() == obj:
+                                target_classes.add(idx)
+                                break
+                
+                if not target_classes:
+                    target_classes = set(self.default_classes)
+                    
+                target_classes_list = list(target_classes)
+                
                 # Run YOLO inference
-                results = self.model(frame, verbose=False, classes=self.target_classes, device=0)
+                results = self.model(frame, verbose=False, classes=target_classes_list, device=0)
                 
                 # Check each ROI
                 current_status = {roi_id: "Empty" for roi_id in self.rois.keys()}
                 
                 # To track class counts for detections
-                class_counts = {
-                    "car": 0, "motorcycle": 0, "bus": 0, "truck": 0
-                }
+                class_counts = {self.model.names[idx].lower(): 0 for idx in target_classes_list}
                 
                 for result in results:
                     boxes = result.boxes.xyxy.cpu().numpy() # [x1, y1, x2, y2]
                     cls_ids = result.boxes.cls.cpu().numpy()
                     
                     for box, cls_id in zip(boxes, cls_ids):
-                        class_name = self.model.names[int(cls_id)]
+                        class_name = self.model.names[int(cls_id)].lower()
                         if class_name in class_counts:
                             class_counts[class_name] += 1
                             
+                        # Normalize the bbox to match the [0..1] scaled polygons
+                        norm_box = [box[0]/img_w, box[1]/img_h, box[2]/img_w, box[3]/img_h]
+                            
                         # Check this box against all ROIs
-                        for roi_id, polygon in self.rois.items():
-                            if self.intrusion_detector.check_intrusion_bbox(box, polygon):
-                                current_status[roi_id] = "Carfull"
+                        for roi_id, roi_data in self.rois.items():
+                            if class_name in roi_data["target_objects"]:
+                                if self.intrusion_detector.check_intrusion_bbox(norm_box, roi_data["polygon"]):
+                                    current_status[roi_id] = "Carfull"
                 
                 # Log detections to DB
                 if any(count > 0 for count in class_counts.values()):

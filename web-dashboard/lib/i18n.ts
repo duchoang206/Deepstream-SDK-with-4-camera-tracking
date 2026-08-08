@@ -20,6 +20,8 @@ export const translations = {
     building: {
       title: 'Camera Infrastructure',
       config: 'Config',
+      cameraSetting: 'Camera Setting',
+      roiSetting: 'ROI Setting',
       registerTitle: 'Register New RTSP Stream',
       camNameLabel: 'Camera Name (Location)',
       camNamePlaceholder: 'e.g. Cam 1 (Main Hall)',
@@ -68,6 +70,8 @@ export const translations = {
     building: {
       title: 'Hạ tầng Camera',
       config: 'Cấu hình',
+      cameraSetting: 'Cấu hình Camera',
+      roiSetting: 'Cấu hình ROI',
       registerTitle: 'Đăng ký luồng RTSP mới',
       camNameLabel: 'Tên Camera (Vị trí)',
       camNamePlaceholder: 'VD: Cam 1 (Sảnh chính)',

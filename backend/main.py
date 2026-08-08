@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -7,6 +7,7 @@ import uuid
 import sys
 import os
 import requests
+import cv2
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from core.yolo_engine import YOLOEngine
@@ -37,7 +38,8 @@ cameras: Dict[str, dict] = {}
 
 class ROI(BaseModel):
     id: str
-    points: List[List[int]] # List of [x, y] coordinates
+    target_objects: List[str] = []
+    points: List[List[float]] # List of [x, y] normalized coordinates
 
 class CameraAddRequest(BaseModel):
     rtsp_url: str
@@ -91,6 +93,24 @@ async def list_cameras():
         result.append(cam_data)
         
     return {"cameras": result}
+
+@app.get("/api/camera/{cam_id}/snapshot")
+async def get_camera_snapshot(cam_id: str):
+    """
+    Get a single frame snapshot from the camera for ROI drawing.
+    """
+    if cam_id not in engines:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    
+    ret, frame = engines[cam_id].rtsp_reader.get_latest_frame()
+    if not ret or frame is None:
+        raise HTTPException(status_code=503, detail="Frame not available yet")
+        
+    success, encoded_image = cv2.imencode('.jpg', frame)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to encode image")
+        
+    return Response(content=encoded_image.tobytes(), media_type="image/jpeg")
 
 @app.post("/api/camera/{cam_id}/roi")
 async def configure_roi(cam_id: str, request: ROISetupRequest):
