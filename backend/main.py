@@ -60,13 +60,18 @@ async def add_camera(request: CameraAddRequest):
     }
     
     # Initialize YOLO Engine which starts the background RTSP thread and Inference loop
-    engine = YOLOEngine(cam_id=cam_id, rtsp_url=request.rtsp_url, logger=app_logger)
+    # We use the local transcoded stream (H.264) instead of the original stream to reduce CPU decode load
+    local_rtsp = f"rtsp://localhost:8554/{cam_id}"
+    engine = YOLOEngine(cam_id=cam_id, rtsp_url=local_rtsp, logger=app_logger)
     engines[cam_id] = engine
     
-    # Add path to MediaMTX dynamically for WebRTC viewing
+    # Add path to MediaMTX dynamically for WebRTC viewing, with FFmpeg transcoding to support H.265 sources
     try:
+        ffmpeg_cmd = f"ffmpeg -rtsp_transport tcp -hwaccel cuda -i {request.rtsp_url} -c:v h264_nvenc -preset p1 -tune ll -g 30 -b:v 1M -c:a copy -f rtsp rtsp://localhost:8554/{cam_id}"
         requests.post(f"{MEDIAMTX_API}/add/{cam_id}", json={
-            "source": request.rtsp_url
+            "source": "publisher",
+            "runOnInit": ffmpeg_cmd,
+            "runOnInitRestart": True
         }, timeout=2)
     except Exception as e:
         print(f"Failed to add path to MediaMTX: {e}")

@@ -56,7 +56,7 @@ class YOLOEngine:
             ret, frame = self.rtsp_reader.get_latest_frame()
             if ret and frame is not None and len(self.rois) > 0:
                 # Run YOLO inference
-                results = self.model(frame, verbose=False, classes=self.target_classes)
+                results = self.model(frame, verbose=False, classes=self.target_classes, device=0)
                 
                 # Check each ROI
                 current_status = {roi_id: "Empty" for roi_id in self.rois.keys()}

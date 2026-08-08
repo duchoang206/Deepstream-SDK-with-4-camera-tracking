@@ -1,5 +1,5 @@
 # Minimal MediaMTX Configuration - Only WebRTC enabled
-rtsp: no
+rtsp: yes
 rtmp: no
 hls: no
 srt: no
