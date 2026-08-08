@@ -241,8 +241,9 @@ body {
  *  VIDEO GRID INSIDE CANVAS
  * -------------------------- */
 .video-grid-fms {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  align-content: start;
   gap: 16px;
   padding: 24px;
   height: 100%;
@@ -251,8 +252,6 @@ body {
 }
 
 .video-card-fms {
-  flex: 1 1 calc(50% - 16px);
-  min-width: 400px;
   background: var(--bg-app);
   border: 2px solid var(--border-focus);
   border-radius: 8px;

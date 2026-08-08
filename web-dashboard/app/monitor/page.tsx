@@ -130,39 +130,59 @@ export default function MonitorPage() {
                 </div>
               </div>
             ) : (
-              <div style={{ display: 'flex', height: '100%', padding: '24px' }}>
+              <div style={{ display: 'flex', gap: '24px', height: '100%', padding: '24px', overflowY: 'auto' }}>
                 {cameras.filter(c => c.id === activeTab).map(cam => {
                   const isIntrusion = cam.status && Object.values(cam.status).includes("Carfull");
                   return (
-                    <div key={cam.id} className={`video-card-fms ${isIntrusion ? 'intrusion' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', maxHeight: '100%' }}>
-                      <div className="video-fms-header">
-                        <span>{cam.name}</span>
-                        {isIntrusion && <span style={{ color: '#ef4444' }}>INTRUSION!</span>}
-                      </div>
-                      
-                      <div className="video-frame" style={{ flex: 1, position: 'relative' }}>
-                        <iframe 
-                          src={`http://localhost:8081/${cam.id}/`} 
-                          style={{ width: '100%', height: '100%', border: 'none', position: 'absolute', top: 0, left: 0 }}
-                          title={cam.name}
-                          scrolling="no"
-                        />
+                    <React.Fragment key={cam.id}>
+                      {/* Left: Centered Video Card */}
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                        <div className={`video-card-fms ${isIntrusion ? 'intrusion' : ''}`} style={{ width: '100%', maxWidth: '1400px', margin: '0 auto' }}>
+                          <div className="video-fms-header">
+                            <span>{cam.name}</span>
+                            {isIntrusion && <span style={{ color: '#ef4444' }}>INTRUSION!</span>}
+                          </div>
+                          
+                          <div className="video-frame">
+                            <iframe 
+                              src={`http://localhost:8081/${cam.id}/`} 
+                              style={{ width: '100%', height: '100%', border: 'none' }}
+                              title={cam.name}
+                              scrolling="no"
+                            />
+                          </div>
+                        </div>
                       </div>
 
-                      {cam.status && Object.keys(cam.status).length > 0 && (
-                        <div style={{ padding: '8px 12px', borderTop: '1px solid #e2e8f0', background: 'white', display: 'flex', gap: '8px' }}>
-                          {Object.entries(cam.status).map(([roi, stat]) => (
-                            <span key={roi} style={{ 
-                              padding: '4px 8px', borderRadius: '4px', fontSize: '14px', fontWeight: '600',
-                              background: stat === 'Carfull' ? '#fee2e2' : '#dcfce3', 
-                              color: stat === 'Carfull' ? '#ef4444' : '#16a34a' 
-                            }}>
-                              {roi}: {stat as string}
-                            </span>
-                          ))}
+                      {/* Right: Status Sidebar */}
+                      <div style={{ width: '320px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                        <div style={{ background: 'white', borderRadius: '12px', padding: '20px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+                          <h3 style={{ color: '#334155', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px', marginBottom: '16px', fontWeight: 600 }}>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                            ROI STATUS
+                          </h3>
+                          
+                          {cam.status && Object.keys(cam.status).length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                              {Object.entries(cam.status).map(([roi, stat]) => (
+                                <div key={roi} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                                  <span style={{ fontWeight: 600, color: '#334155' }}>{roi}</span>
+                                  <span style={{ 
+                                    padding: '4px 8px', borderRadius: '4px', fontSize: '13px', fontWeight: 'bold',
+                                    background: stat === 'Carfull' ? '#fee2e2' : '#dcfce3', 
+                                    color: stat === 'Carfull' ? '#ef4444' : '#16a34a' 
+                                  }}>
+                                    {stat as string}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ color: '#64748b', fontSize: '14px', fontStyle: 'italic' }}>Waiting for ROI data...</div>
+                          )}
                         </div>
-                      )}
-                    </div>
+                      </div>
+                    </React.Fragment>
                   );
                 })}
               </div>
