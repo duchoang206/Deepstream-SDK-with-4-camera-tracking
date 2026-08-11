@@ -1,5 +1,4 @@
 person
 pallet
-agv
-amr
-rack
+trolley
+encumbrance

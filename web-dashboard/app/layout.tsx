@@ -7,7 +7,7 @@ import { LanguageProvider } from '../components/LanguageContext';
 import HeaderActions from '../components/HeaderActions';
 
 export const metadata: Metadata = {
-  title: 'RTC VMS Dashboard',
+  title: 'VMS-RTC',
   description: 'Vision AI YOLO Backend System',
 };
 

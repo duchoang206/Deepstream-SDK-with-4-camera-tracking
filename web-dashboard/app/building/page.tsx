@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useLanguage } from '../../components/LanguageContext';
+import { Eye, EyeOff } from 'lucide-react';
 
 type Camera = {
   id: string;
@@ -15,6 +16,12 @@ export default function BuildingPage() {
   const [newCamName, setNewCamName] = useState('');
   const [newCamUrl, setNewCamUrl] = useState('');
   
+  // Auth Modal States
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authUsername, setAuthUsername] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  
   // ROI Drawing States
   const [roiCamId, setRoiCamId] = useState('');
   const [snapshotTimestamp, setSnapshotTimestamp] = useState(0);
@@ -23,7 +30,7 @@ export default function BuildingPage() {
   const [drawing, setDrawing] = useState(false);
   const [showLabelModal, setShowLabelModal] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
-  const availableLabels = ['car', 'motorcycle', 'bus', 'truck', 'person', 'pallet', 'trolley'];
+  const [availableLabels, setAvailableLabels] = useState<string[]>(['person', 'pallet', 'agv', 'amr', 'rack']);
 
   const { t } = useLanguage();
 
@@ -43,8 +50,18 @@ export default function BuildingPage() {
       .catch(err => console.error("Error fetching cameras:", err));
   };
 
+  const fetchLabels = () => {
+    fetch('/api/backend/labels')
+      .then(res => res.json())
+      .then(data => {
+        if (data.labels) setAvailableLabels(data.labels);
+      })
+      .catch(err => console.error("Error fetching labels:", err));
+  };
+
   useEffect(() => {
     fetchCameras();
+    fetchLabels();
     const interval = setInterval(fetchCameras, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -53,20 +70,30 @@ export default function BuildingPage() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (activeTab !== 'roi' || !roiCamId) return;
       
-      if (e.key.toLowerCase() === 'r') {
+      const key = e.key.toLowerCase();
+      
+      if (key === 'r') {
         // Hoàn tác điểm vừa vẽ
         setCurrentPoints(prev => prev.slice(0, -1));
-      } else if (e.key.toLowerCase() === 's') {
-        // Lưu ROI (hoàn thành đa giác hoặc lưu trong modal)
-        if (drawing && currentPoints.length >= 3) {
-          handleFinishDrawing();
+      } else if (key === 's') {
+        // Mở modal chọn nhãn HOẶC lưu nhãn
+        if (drawing && currentPoints.length >= 3 && !showLabelModal) {
+          handleSaveShape();
         } else if (showLabelModal) {
           handleSaveROI();
         }
-      } else if (e.key.toLowerCase() === 'q') {
-        // Lưu tọa độ gửi về backend
-        if (roiCamId && roisByCam[roiCamId]?.length > 0 && !showLabelModal) {
-          handleApplyToBackend(roiCamId);
+      } else if (key === 'q') {
+        // Xóa tất cả ROI
+        if (!showLabelModal) {
+          setRoisByCam(prev => ({ ...prev, [roiCamId]: [] }));
+          setCurrentPoints([]);
+        }
+      } else if (key === 'enter') {
+        // Hoàn thành hoặc lưu nhãn
+        if (!showLabelModal) {
+          handleEnter();
+        } else {
+          handleSaveROI();
         }
       }
     };
@@ -75,20 +102,37 @@ export default function BuildingPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeTab, roiCamId, drawing, currentPoints, showLabelModal, roisByCam, selectedLabels]);
 
-  const handleAddCamera = async (e: React.FormEvent) => {
+  const handleAddCamera = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCamName || !newCamUrl) return;
+    setShowAuthModal(true);
+  };
+
+  const handleApplyCameraAuth = async () => {
+    if (!authUsername || !authPassword) {
+      alert("Vui lòng nhập đầy đủ tài khoản và mật khẩu");
+      return;
+    }
+    
+    // Construct the RTSP URL
+    const fullRtspUrl = `rtsp://${authUsername}:${authPassword}@${newCamUrl}:554/Streaming/Channels/101`;
 
     try {
       const res = await fetch('/api/backend/camera/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newCamName, rtsp_url: newCamUrl })
+        body: JSON.stringify({ name: newCamName, rtsp_url: fullRtspUrl })
       });
       if (res.ok) {
         setNewCamName('');
         setNewCamUrl('');
+        setAuthUsername('');
+        setAuthPassword('');
+        setShowAuthModal(false);
         fetchCameras();
+      } else {
+        const errData = await res.json().catch(() => null);
+        alert(errData?.detail || "Thông tin không chính xác");
       }
     } catch (err) {
       console.error("Failed to add camera", err);
@@ -116,13 +160,56 @@ export default function BuildingPage() {
     setCurrentPoints([...currentPoints, [x, y]]);
   };
 
-  const handleFinishDrawing = () => {
+  const handleSaveShape = () => {
+    if (currentPoints.length < 3) {
+      alert("Cần ít nhất 3 điểm để tạo thành một vùng!");
+      return;
+    }
+    // Mở modal để chọn nhãn cho ROI này
+    setShowLabelModal(true);
+  };
+
+  const handleSaveROI = () => {
+    if (!roiCamId) return;
+    const currentRois = roisByCam[roiCamId] || [];
+    const newRoi = {
+      id: `roi_${currentRois.length + 1}`,
+      target_objects: selectedLabels.length > 0 ? selectedLabels : (availableLabels.length > 0 ? [availableLabels[0]] : []),
+      points: currentPoints
+    };
+    setRoisByCam({ ...roisByCam, [roiCamId]: [...currentRois, newRoi] });
+    
+    // Reset current shape but keep drawing mode active
+    setCurrentPoints([]);
+    setSelectedLabels([]);
+    setShowLabelModal(false);
+  };
+
+  const handleEnter = async () => {
     if (currentPoints.length >= 3) {
-      // Don't set drawing false yet, let modal handle it or cancel
-      setShowLabelModal(true);
-    } else {
-      alert("Please draw at least 3 points for a polygon.");
-      setCurrentPoints([]);
+      alert("Bạn đang vẽ dở một vùng, hãy ấn S để lưu nó trước khi hoàn thành.");
+      return;
+    }
+    const currentRois = roisByCam[roiCamId] || [];
+    if (currentRois.length === 0) {
+      alert("Vui lòng vẽ và lưu ít nhất 1 vùng ROI.");
+      return;
+    }
+    
+    // Thoát chế độ vẽ và gửi lên backend
+    setDrawing(false);
+    
+    try {
+      const res = await fetch(`/api/backend/camera/${roiCamId}/roi`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rois: currentRois })
+      });
+      if (res.ok) {
+        alert("Đã lưu tọa độ và gửi nhãn về cho Model xử lý thành công!");
+      }
+    } catch (err) {
+      console.error("Failed to apply ROIs", err);
     }
   };
 
@@ -131,38 +218,6 @@ export default function BuildingPage() {
       setSelectedLabels(selectedLabels.filter(l => l !== label));
     } else {
       setSelectedLabels([...selectedLabels, label]);
-    }
-  };
-
-  const handleSaveROI = async () => {
-    if (!roiCamId) return;
-    const currentRois = roisByCam[roiCamId] || [];
-    const newRoi = {
-      id: `roi_${currentRois.length + 1}`,
-      target_objects: selectedLabels,
-      points: currentPoints
-    };
-    const updatedRois = [...currentRois, newRoi];
-    setRoisByCam({ ...roisByCam, [roiCamId]: updatedRois });
-    
-    // Reset drawing state
-    setDrawing(false);
-    setCurrentPoints([]);
-    setSelectedLabels([]);
-    setShowLabelModal(false);
-
-    // Auto apply to backend
-    try {
-      const res = await fetch(`/api/backend/camera/${roiCamId}/roi`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rois: updatedRois })
-      });
-      if (res.ok) {
-        alert("Đã lưu tọa độ và gửi nhãn về cho Model xử lý thành công!");
-      }
-    } catch (err) {
-      console.error("Failed to apply ROIs", err);
     }
   };
 
@@ -197,12 +252,12 @@ export default function BuildingPage() {
                 />
               </div>
               <div style={{ flex: 2 }}>
-                <label style={{ display: 'block', marginBottom: '8px', fontSize: '16px', color: '#64748b', fontWeight: '500' }}>{t.building.rtspUrlLabel}</label>
+                <label style={{ display: 'block', marginBottom: '8px', fontSize: '16px', color: '#64748b', fontWeight: '500' }}>IP Address</label>
                 <input 
                   type="text" 
                   value={newCamUrl}
                   onChange={(e) => setNewCamUrl(e.target.value)}
-                  placeholder={t.building.rtspUrlPlaceholder}
+                  placeholder="e.g. 192.168.1.100"
                   className="input-fms"
                   style={{ fontSize: '18px', padding: '14px 18px' }}
                 />
@@ -281,6 +336,10 @@ export default function BuildingPage() {
                       setDrawing(false);
                       setCurrentPoints([]);
                       setSnapshotTimestamp(Date.now());
+                    } else {
+                      setRoiCamId('');
+                      setDrawing(false);
+                      setCurrentPoints([]);
                     }
                   }}
                 >
@@ -297,35 +356,31 @@ export default function BuildingPage() {
                       >
                         Refresh Image
                       </button>
-                      {isDrawingThis ? (
-                        <button 
-                          className="btn-fms-primary"
-                          onClick={handleFinishDrawing}
-                          style={{ padding: '8px 16px', background: '#10b981', fontSize: '14px' }}
-                        >
-                          Hoàn Thành (S)
-                        </button>
-                      ) : (
-                        <button 
-                          className="btn-fms-primary"
-                          onClick={() => { setDrawing(true); setCurrentPoints([]); }}
-                          style={{ padding: '8px 16px', background: '#3b82f6', fontSize: '14px' }}
-                        >
-                          + Vẽ ROI Mới
-                        </button>
-                      )}
+                      <button 
+                        className="btn-fms-primary"
+                        onClick={() => { setDrawing(true); setCurrentPoints([]); }}
+                        style={{ padding: '8px 16px', background: '#3b82f6', fontSize: '14px' }}
+                      >
+                        + Vẽ ROI Mới
+                      </button>
+                      <button 
+                        className="btn-fms-primary"
+                        onClick={handleEnter}
+                        style={{ padding: '8px 16px', background: '#10b981', fontSize: '14px' }}
+                      >
+                        Hoàn Thành (Enter)
+                      </button>
                     </div>
                   )}
                 </div>
 
                 {isExpanded && (
                   <div style={{ position: 'relative', width: '100%', maxWidth: '1000px', margin: '24px auto 0' }}>
-                    {isDrawingThis && (
-                      <div style={{ marginBottom: '12px', color: '#64748b', fontSize: '15px', display: 'flex', gap: '20px', justifyContent: 'center' }}>
-                        <span><kbd style={{ padding: '4px 8px', background: '#e2e8f0', borderRadius: '4px', color: '#334155', fontWeight: 'bold' }}>R</kbd> Hoàn tác</span>
-                        <span><kbd style={{ padding: '4px 8px', background: '#e2e8f0', borderRadius: '4px', color: '#334155', fontWeight: 'bold' }}>S</kbd> Hoàn thành hình</span>
-                      </div>
-                    )}
+                    <div style={{ marginBottom: '12px', color: '#64748b', fontSize: '15px', display: 'flex', gap: '20px', justifyContent: 'center' }}>
+                      <span><kbd style={{ padding: '4px 8px', background: '#e2e8f0', borderRadius: '4px', color: '#334155', fontWeight: 'bold' }}>R</kbd> Hoàn tác</span>
+                      <span><kbd style={{ padding: '4px 8px', background: '#e2e8f0', borderRadius: '4px', color: '#334155', fontWeight: 'bold' }}>S</kbd> Lưu</span>
+                      <span><kbd style={{ padding: '4px 8px', background: '#e2e8f0', borderRadius: '4px', color: '#334155', fontWeight: 'bold' }}>Q</kbd> Delete</span>
+                    </div>
                     {/* Bỏ fixed height để ảnh tự giữ đúng tỷ lệ thực (aspect ratio), đảm bảo tọa độ không bị sai lệch */}
                     <div style={{ position: 'relative', width: '100%', border: isDrawingThis ? '2px solid #3b82f6' : '2px solid #e2e8f0', borderRadius: '8px', overflow: 'hidden' }}>
                       <img 
@@ -392,7 +447,7 @@ export default function BuildingPage() {
                   ))}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-                  <button className="btn-fms-secondary" onClick={() => { setShowLabelModal(false); setDrawing(false); setCurrentPoints([]); setRoiCamId(''); }}>Cancel</button>
+                  <button className="btn-fms-secondary" onClick={() => { setShowLabelModal(false); setCurrentPoints([]); }}>Cancel</button>
                   <button className="btn-fms-primary" onClick={handleSaveROI}>Save ROI (S)</button>
                 </div>
               </div>
@@ -401,6 +456,66 @@ export default function BuildingPage() {
         </div>
       )}
     </div>
+
+      {/* Auth Modal for adding Camera */}
+      {showAuthModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
+          backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <form onSubmit={(e) => { e.preventDefault(); handleApplyCameraAuth(); }} style={{ background: 'white', padding: '32px', borderRadius: '12px', width: '400px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
+              <img src="/logo.png" alt="RTC Logo" style={{ height: '32px' }} />
+              <h3 style={{ margin: 0, fontSize: '20px', color: '#1e293b' }}>Xác thực luồng Camera</h3>
+            </div>
+            
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Tài khoản</label>
+              <input 
+                type="text" 
+                value={authUsername}
+                onChange={(e) => setAuthUsername(e.target.value)}
+                className="input-fms"
+                autoFocus
+              />
+            </div>
+            
+            <div style={{ marginBottom: '32px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Mật khẩu</label>
+              <div style={{ position: 'relative' }}>
+                <input 
+                  type={showPassword ? "text" : "password"} 
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="input-fms"
+                  style={{ paddingRight: '40px' }}
+                />
+                <button type="button" onClick={() => setShowPassword(!showPassword)} style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}>
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '16px' }}>
+              <button 
+                type="button"
+                onClick={() => setShowAuthModal(false)}
+                style={{ padding: '10px 24px', borderRadius: '8px', border: '1px solid #cbd5e1', background: 'white', cursor: 'pointer', fontWeight: '600', color: '#475569' }}
+              >
+                Hủy
+              </button>
+              <button 
+                type="submit"
+                className="btn-fms-primary"
+                style={{ padding: '10px 24px' }}
+              >
+                Apply
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </>
   );
 }

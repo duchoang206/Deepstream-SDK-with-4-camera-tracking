@@ -1,5 +1,6 @@
 import threading
 import time
+import os
 from ultralytics import YOLO
 from core.rtsp_reader import RTSPLatestFrameReader
 from core.intrusion_logic import IntrusionDetector
@@ -18,11 +19,15 @@ class YOLOEngine:
         self.sleep_time = 1.0 / target_fps
         self.logger = logger
         
-        # Initialize YOLO model (nano model for speed)
-        self.model = YOLO("yolov8n.pt") 
+        # Initialize YOLO model (fallback to nano if best.pt is missing)
+        model_path = "weights/best.pt"
+        if not os.path.exists(os.path.join(os.path.dirname(os.path.dirname(__file__)), model_path)):
+            print(f"[{self.cam_id}] Warning: {model_path} not found, falling back to yolov8n.pt")
+            model_path = "yolov8n.pt"
+        self.model = YOLO(model_path) 
         
-        # Default classes if none configured
-        self.default_classes = [2, 3, 5, 7]
+        # Default classes if none configured (use all available classes from model)
+        self.default_classes = list(self.model.names.keys())
         
         self.rtsp_reader = RTSPLatestFrameReader(rtsp_url, cam_id)
         self.intrusion_detector = IntrusionDetector()

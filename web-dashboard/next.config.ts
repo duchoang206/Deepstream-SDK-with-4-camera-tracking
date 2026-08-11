@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
     ]
   },
   // @ts-ignore
-  allowedDevOrigins: ['192.168.1.6', 'localhost', '127.0.0.1']
+  allowedDevOrigins: ['192.168.1.6', '192.168.53.77', 'localhost', '127.0.0.1']
 };
 
 export default nextConfig;

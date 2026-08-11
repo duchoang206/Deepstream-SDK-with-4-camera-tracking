@@ -53,6 +53,30 @@ async def add_camera(request: CameraAddRequest):
     """
     Add a new RTSP camera stream to the system.
     """
+    import subprocess
+    from fastapi import HTTPException
+    
+    # Robust validation using ffprobe to avoid OpenCV buffering issues
+    try:
+        # Give ffprobe 5 seconds to connect and probe the stream
+        cmd = [
+            "ffprobe", 
+            "-rtsp_transport", "tcp", 
+            "-v", "error", 
+            "-show_format", 
+            "-show_streams", 
+            request.rtsp_url
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        if result.returncode != 0:
+            raise HTTPException(status_code=400, detail="Thông tin không chính xác hoặc Camera offline.")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=400, detail="Kết nối Camera bị quá hạn (15s Timeout). Vui lòng thử lại.")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=400, detail=f"Lỗi kiểm tra Camera: {str(e)}")
+        
     cam_id = str(uuid.uuid4())[:8]
     cameras[cam_id] = {
         "id": cam_id,
@@ -149,6 +173,22 @@ async def remove_camera(cam_id: str):
         
     del cameras[cam_id]
     return {"message": f"Camera {cam_id} removed"}
+
+@app.get("/api/labels")
+async def get_labels():
+    """
+    Get all AI labels from the models/labels.txt file.
+    """
+    labels_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "labels.txt")
+    if not os.path.exists(labels_path):
+        return {"labels": ["car", "motorcycle", "bus", "truck", "person"]}
+        
+    try:
+        with open(labels_path, "r") as f:
+            labels = [line.strip() for line in f.readlines() if line.strip()]
+        return {"labels": labels}
+    except Exception as e:
+        return {"labels": ["car", "motorcycle", "bus", "truck", "person"], "error": str(e)}
 
 @app.get("/api/analytics/dashboard")
 async def get_analytics_dashboard():

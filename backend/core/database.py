@@ -121,6 +121,22 @@ class DatabaseManager:
                     "alerts": daily_alerts.get(d, 0)
                 })
 
+            # 5. Recent events (for Recent Alerts table)
+            cursor.execute('''
+                SELECT cam_id, roi_id, status, timestamp 
+                FROM events 
+                ORDER BY timestamp DESC LIMIT 5
+            ''')
+            recent_events = [{"camera": row[0], "type": row[1], "status": row[2], "time": row[3]} for row in cursor.fetchall()]
+            
+            # 6. Camera stats (for Camera Statistics table)
+            cursor.execute('''
+                SELECT cam_id, SUM(count) as total_detects 
+                FROM detections 
+                GROUP BY cam_id
+            ''')
+            camera_stats = [{"camera": row[0], "total": row[1]} for row in cursor.fetchall()]
+
             conn.close()
             
             return {
@@ -129,7 +145,9 @@ class DatabaseManager:
                 "total_alerts": total_alerts,
                 "system_efficiency": 98, # Mocked value for now
                 "class_distribution": class_distribution,
-                "alerts_trend": alerts_trend
+                "alerts_trend": alerts_trend,
+                "recent_events": recent_events,
+                "camera_stats": camera_stats
             }
 
 # Global singleton
