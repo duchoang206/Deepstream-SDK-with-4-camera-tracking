@@ -11,7 +11,7 @@ import cv2
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from core.yolo_engine import YOLOEngine
-from core.circular_logger import CircularLogger
+from utils.circular_logger import CircularLogger
 from core.database import db_manager
 
 # MediaMTX API URL
