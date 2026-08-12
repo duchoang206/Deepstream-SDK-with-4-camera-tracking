@@ -4,7 +4,7 @@ import threading
 from datetime import datetime, timedelta
 
 class DatabaseManager:
-    def __init__(self, db_path="analytics.db"):
+    def __init__(self, db_path="data/analytics.db"):
         self.db_path = db_path
         self._lock = threading.Lock()
         self._init_db()
