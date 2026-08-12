@@ -4,7 +4,7 @@ import os
 from ultralytics import YOLO
 from core.rtsp_reader import RTSPLatestFrameReader
 from core.intrusion_logic import IntrusionDetector
-from core.circular_logger import CircularLogger
+from utils.circular_logger import CircularLogger
 from core.database import db_manager
 
 class YOLOEngine:
@@ -20,7 +20,7 @@ class YOLOEngine:
         self.logger = logger
         
         # Initialize YOLO model (fallback to nano if best.pt is missing)
-        model_path = "weights/best.pt"
+        model_path = "models_config/weights/best.pt"
         if not os.path.exists(os.path.join(os.path.dirname(os.path.dirname(__file__)), model_path)):
             print(f"[{self.cam_id}] Warning: {model_path} not found, falling back to yolov8n.pt")
             model_path = "yolov8n.pt"
