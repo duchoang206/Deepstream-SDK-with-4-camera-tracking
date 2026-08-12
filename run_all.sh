@@ -21,8 +21,9 @@ echo "==================================================="
 
 # 1. Start MediaMTX WebRTC Server
 echo -e "\n[1/3] Starting MediaMTX (Port 8081 & 9997)..."
-# Run local mediamtx binary
+cd services/mediamtx
 ./mediamtx mediamtx.yml &
+cd ../..
 
 # Wait 1 second to ensure MediaMTX API is up
 sleep 1
