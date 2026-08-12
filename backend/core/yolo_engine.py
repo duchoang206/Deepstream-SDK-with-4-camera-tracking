@@ -36,6 +36,8 @@ class YOLOEngine:
         self.rois = {}
         # ROI status map: { roi_id: "Carfull" / "Empty" }
         self.roi_status = {}
+        # ROI history: { roi_id: [True, False, ...] } tracking detections in recent frames
+        self.roi_history = {}
         
         self.running = True
         self.thread = threading.Thread(target=self._inference_loop, daemon=True)
@@ -55,6 +57,8 @@ class YOLOEngine:
                 }
                 if r["id"] not in self.roi_status:
                     self.roi_status[r["id"]] = "Empty"
+                if r["id"] not in self.roi_history:
+                    self.roi_history[r["id"]] = []
         self.rois = new_rois
 
     def _inference_loop(self):
@@ -80,10 +84,10 @@ class YOLOEngine:
                 target_classes_list = list(target_classes)
                 
                 # Run YOLO inference
-                results = self.model(frame, verbose=False, classes=target_classes_list, device=0)
+                results = self.model(frame, verbose=False, classes=target_classes_list, conf=0.25, device=0)
                 
                 # Check each ROI
-                current_status = {roi_id: "Empty" for roi_id in self.rois.keys()}
+                current_frame_detections = {roi_id: False for roi_id in self.rois.keys()}
                 
                 # To track class counts for detections
                 class_counts = {self.model.names[idx].lower(): 0 for idx in target_classes_list}
@@ -91,9 +95,12 @@ class YOLOEngine:
                 for result in results:
                     boxes = result.boxes.xyxy.cpu().numpy() # [x1, y1, x2, y2]
                     cls_ids = result.boxes.cls.cpu().numpy()
+                    confs = result.boxes.conf.cpu().numpy()
                     
-                    for box, cls_id in zip(boxes, cls_ids):
+                    for box, cls_id, conf in zip(boxes, cls_ids, confs):
                         class_name = self.model.names[int(cls_id)].lower()
+                        print(f"[{self.cam_id}] Debug YOLO: {class_name} conf={conf:.3f} box={box}")
+                        
                         if class_name in class_counts:
                             class_counts[class_name] += 1
                             
@@ -103,20 +110,34 @@ class YOLOEngine:
                         # Check this box against all ROIs
                         for roi_id, roi_data in self.rois.items():
                             if class_name in roi_data["target_objects"]:
-                                if self.intrusion_detector.check_intrusion_bbox(norm_box, roi_data["polygon"]):
-                                    current_status[roi_id] = "Carfull"
+                                if self.intrusion_detector.check_intrusion_bbox(norm_box, roi_data["polygon"], spatial_method="center_bottom"):
+                                    current_frame_detections[roi_id] = True
                 
                 # Log detections to DB
                 if any(count > 0 for count in class_counts.values()):
                     db_manager.log_detections(self.cam_id, class_counts)
                 
-                # Update status and log changes
-                for roi_id, status in current_status.items():
-                    if status != self.roi_status.get(roi_id):
-                        self.roi_status[roi_id] = status
-                        self.logger.log_event(self.cam_id, roi_id, status)
-                        db_manager.log_event(self.cam_id, roi_id, status)
-                        print(f"[{self.cam_id}] ROI {roi_id} changed to {status}")
+                # Update status and log changes using temporal logic
+                enter_window = 7
+                enter_count = 5
+                
+                for roi_id, detected in current_frame_detections.items():
+                    if roi_id not in self.roi_history:
+                        self.roi_history[roi_id] = []
+                        
+                    self.roi_history[roi_id].append(detected)
+                    if len(self.roi_history[roi_id]) > enter_window:
+                        self.roi_history[roi_id].pop(0)
+                        
+                    # Evaluate temporal status
+                    times_detected = sum(self.roi_history[roi_id])
+                    new_status = "Carfull" if times_detected >= enter_count else "Empty"
+                    
+                    if new_status != self.roi_status.get(roi_id):
+                        self.roi_status[roi_id] = new_status
+                        self.logger.log_event(self.cam_id, roi_id, new_status)
+                        db_manager.log_event(self.cam_id, roi_id, new_status)
+                        print(f"[{self.cam_id}] ROI {roi_id} changed to {new_status}")
                         
             # Sleep to maintain target FPS (simulate wait for next frame)
             process_time = time.time() - start_time

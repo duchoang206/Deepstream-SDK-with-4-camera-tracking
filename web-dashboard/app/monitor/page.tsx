@@ -23,6 +23,7 @@ export default function MonitorPage() {
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [activeTab, setActiveTab] = useState('all');
   const [activeTool, setActiveTool] = useState('cursor');
+  const [hostName, setHostName] = useState('localhost');
   const { t } = useLanguage();
 
   const fetchCameras = () => {
@@ -33,6 +34,9 @@ export default function MonitorPage() {
   };
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setHostName(window.location.hostname);
+    }
     fetchCameras();
     const interval = setInterval(fetchCameras, 2000);
     return () => clearInterval(interval);
@@ -85,7 +89,7 @@ export default function MonitorPage() {
                           
                           <div className="video-frame">
                             <iframe 
-                              src={`http://localhost:8081/${cam.id}/`} 
+                              src={`http://${hostName}:8081/${cam.id}/`} 
                               style={{ width: '100%', height: '100%', border: 'none' }}
                               title={cam.name}
                               scrolling="no"
@@ -145,7 +149,7 @@ export default function MonitorPage() {
                           
                           <div className="video-frame">
                             <iframe 
-                              src={`http://localhost:8081/${cam.id}/`} 
+                              src={`http://${hostName}:8081/${cam.id}/`} 
                               style={{ width: '100%', height: '100%', border: 'none' }}
                               title={cam.name}
                               scrolling="no"

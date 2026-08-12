@@ -20,18 +20,22 @@ class IntrusionDetector:
         p = Point(point[0], point[1])
         return polygon.contains(p)
 
-    def check_intrusion_bbox(self, bbox: List[int], polygon: Polygon, use_center_bottom=True) -> bool:
+    def check_intrusion_bbox(self, bbox: List[float], polygon: Polygon, spatial_method="bbox_intersects") -> bool:
         """
         Check if a bounding box [x1, y1, x2, y2] intrudes into the polygon.
-        By default, we check the center-bottom point of the bbox (representing the object's footprint).
+        spatial_method: "bbox_intersects" or "center_bottom".
         """
         x1, y1, x2, y2 = bbox
         
-        if use_center_bottom:
-            center_x = (x1 + x2) // 2
+        if spatial_method == "center_bottom":
+            center_x = (x1 + x2) / 2.0
             bottom_y = y2
             return self.check_intrusion_point((center_x, bottom_y), polygon)
-        else:
+        elif spatial_method == "center":
+            center_x = (x1 + x2) / 2.0
+            center_y = (y1 + y2) / 2.0
+            return self.check_intrusion_point((center_x, center_y), polygon)
+        elif spatial_method == "bbox_intersects":
             # Check intersection of bounding box rectangle with polygon
             bbox_poly = Polygon([
                 (x1, y1),
@@ -40,3 +44,4 @@ class IntrusionDetector:
                 (x1, y2)
             ])
             return polygon.intersects(bbox_poly)
+        return False

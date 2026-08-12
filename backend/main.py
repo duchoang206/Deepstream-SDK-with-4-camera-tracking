@@ -53,29 +53,7 @@ async def add_camera(request: CameraAddRequest):
     """
     Add a new RTSP camera stream to the system.
     """
-    import subprocess
     from fastapi import HTTPException
-    
-    # Robust validation using ffprobe to avoid OpenCV buffering issues
-    try:
-        # Give ffprobe 5 seconds to connect and probe the stream
-        cmd = [
-            "ffprobe", 
-            "-rtsp_transport", "tcp", 
-            "-v", "error", 
-            "-show_format", 
-            "-show_streams", 
-            request.rtsp_url
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
-        if result.returncode != 0:
-            raise HTTPException(status_code=400, detail="Thông tin không chính xác hoặc Camera offline.")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=400, detail="Kết nối Camera bị quá hạn (15s Timeout). Vui lòng thử lại.")
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=400, detail=f"Lỗi kiểm tra Camera: {str(e)}")
         
     cam_id = str(uuid.uuid4())[:8]
     cameras[cam_id] = {

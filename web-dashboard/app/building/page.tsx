@@ -18,6 +18,7 @@ export default function BuildingPage() {
   
   // Auth Modal States
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [cameraBrand, setCameraBrand] = useState('hikvision');
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -109,13 +110,25 @@ export default function BuildingPage() {
   };
 
   const handleApplyCameraAuth = async () => {
-    if (!authUsername || !authPassword) {
+    if (cameraBrand !== 'custom' && (!authUsername || !authPassword)) {
       alert("Vui lòng nhập đầy đủ tài khoản và mật khẩu");
+      return;
+    }
+    if (cameraBrand === 'custom' && !newCamUrl.startsWith("rtsp://")) {
+      alert("Vui lòng nhập đường dẫn RTSP hợp lệ (bắt đầu bằng rtsp://) ở ô IP Address ngoài màn hình chính.");
       return;
     }
     
     // Construct the RTSP URL
-    const fullRtspUrl = `rtsp://${authUsername}:${authPassword}@${newCamUrl}:554/Streaming/Channels/101`;
+    let fullRtspUrl = "";
+    if (cameraBrand === 'custom') {
+      fullRtspUrl = newCamUrl;
+    } else if (cameraBrand === 'dahua') {
+      fullRtspUrl = `rtsp://${authUsername}:${authPassword}@${newCamUrl}:554/cam/realmonitor?channel=1&subtype=0`;
+    } else {
+      // hikvision
+      fullRtspUrl = `rtsp://${authUsername}:${authPassword}@${newCamUrl}:554/Streaming/Channels/101`;
+    }
 
     try {
       const res = await fetch('/api/backend/camera/add', {
@@ -471,31 +484,55 @@ export default function BuildingPage() {
             </div>
             
             <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Tài khoản</label>
-              <input 
-                type="text" 
-                value={authUsername}
-                onChange={(e) => setAuthUsername(e.target.value)}
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Hãng Camera</label>
+              <select 
+                value={cameraBrand} 
+                onChange={(e) => setCameraBrand(e.target.value)}
                 className="input-fms"
-                autoFocus
-              />
+                style={{ width: '100%', padding: '10px 14px', fontSize: '15px' }}
+              >
+                <option value="hikvision">Hikvision</option>
+                <option value="dahua">Dahua</option>
+                <option value="custom">Khác (Nhập full link RTSP)</option>
+              </select>
             </div>
             
-            <div style={{ marginBottom: '32px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Mật khẩu</label>
-              <div style={{ position: 'relative' }}>
-                <input 
-                  type={showPassword ? "text" : "password"} 
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  className="input-fms"
-                  style={{ paddingRight: '40px' }}
-                />
-                <button type="button" onClick={() => setShowPassword(!showPassword)} style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}>
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
+            {cameraBrand !== 'custom' ? (
+              <>
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Tài khoản</label>
+                  <input 
+                    type="text" 
+                    value={authUsername}
+                    onChange={(e) => setAuthUsername(e.target.value)}
+                    className="input-fms"
+                    autoFocus
+                  />
+                </div>
+                
+                <div style={{ marginBottom: '32px' }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Mật khẩu</label>
+                  <div style={{ position: 'relative' }}>
+                    <input 
+                      type={showPassword ? "text" : "password"} 
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      className="input-fms"
+                      style={{ paddingRight: '40px' }}
+                    />
+                    <button type="button" onClick={() => setShowPassword(!showPassword)} style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}>
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div style={{ marginBottom: '32px', padding: '16px', background: '#eff6ff', borderRadius: '8px', border: '1px solid #bfdbfe' }}>
+                <p style={{ margin: 0, fontSize: '14px', color: '#1e3a8a', lineHeight: '1.5' }}>
+                  Hệ thống sẽ lấy nguyên đường dẫn bạn vừa nhập ở ô <strong>IP Address</strong> bên ngoài màn hình chính để chạy luồng RTSP. Vui lòng đảm bảo link đã bắt đầu bằng <code style={{background:'#dbeafe', padding:'2px 4px', borderRadius:'4px'}}>rtsp://</code> và có sẵn tài khoản/mật khẩu nếu cần.
+                </p>
               </div>
-            </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '16px' }}>
               <button 
