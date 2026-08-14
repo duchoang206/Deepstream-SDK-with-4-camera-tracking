@@ -19,8 +19,13 @@ echo "==================================================="
 echo "  Starting Vision AI YOLO System (Dynamic Backend) "
 echo "==================================================="
 
-# 1. Start MediaMTX WebRTC Server
-echo -e "\n[1/3] Starting MediaMTX (Port 8081 & 9997)..."
+# 1. Start PostgreSQL Database
+echo -e "\n[1/4] Starting PostgreSQL Database..."
+sudo docker compose up -d
+sleep 2
+
+# 2. Start MediaMTX WebRTC Server
+echo -e "\n[2/4] Starting MediaMTX (Port 8081 & 9997)..."
 cd services/mediamtx
 ./mediamtx mediamtx.yml &
 cd ../..
@@ -28,8 +33,8 @@ cd ../..
 # Wait 1 second to ensure MediaMTX API is up
 sleep 1
 
-# 2. Start FastAPI Backend
-echo -e "\n[2/3] Starting FastAPI Backend (Port 8000)..."
+# 3. Start FastAPI Backend
+echo -e "\n[3/4] Starting FastAPI Backend (Port 8000)..."
 cd backend
 python3 main.py &
 cd ..
@@ -37,8 +42,8 @@ cd ..
 # Wait 2 seconds to ensure Backend is ready
 sleep 2
 
-# 3. Start Next.js Frontend
-echo -e "\n[3/3] Starting Next.js Frontend (Port 3000)..."
+# 4. Start Next.js Frontend
+echo -e "\n[4/4] Starting Next.js Frontend (Port 3000)..."
 cd web-dashboard
 npm run dev &
 cd ..

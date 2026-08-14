@@ -1,46 +1,56 @@
-import sqlite3
+import psycopg2
 import os
 import threading
 from datetime import datetime, timedelta
+import logging
+
+logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    def __init__(self, db_path="data/analytics.db"):
-        self.db_path = db_path
+    def __init__(self, db_url=None):
+        self.db_url = db_url or os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/analytics")
         self._lock = threading.Lock()
         self._init_db()
 
     def _get_connection(self):
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        try:
+            return psycopg2.connect(self.db_url)
+        except Exception as e:
+            logger.error(f"Error connecting to PostgreSQL: {e}")
+            raise
 
     def _init_db(self):
         with self._lock:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
-            # Table for ROI intrusion events
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    cam_id TEXT NOT NULL,
-                    roi_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Table for raw detections
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS detections (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    cam_id TEXT NOT NULL,
-                    class_name TEXT NOT NULL,
-                    count INTEGER NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            conn.commit()
-            conn.close()
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                
+                # Table for ROI intrusion events
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS events (
+                        id SERIAL PRIMARY KEY,
+                        cam_id TEXT NOT NULL,
+                        roi_id TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # Table for raw detections
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS detections (
+                        id SERIAL PRIMARY KEY,
+                        cam_id TEXT NOT NULL,
+                        class_name TEXT NOT NULL,
+                        count INTEGER NOT NULL,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.error(f"Failed to initialize database: {e}")
 
     def log_event(self, cam_id, roi_id, status):
         """Log an ROI status change event."""
@@ -48,7 +58,7 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO events (cam_id, roi_id, status) VALUES (?, ?, ?)",
+                "INSERT INTO events (cam_id, roi_id, status) VALUES (%s, %s, %s)",
                 (cam_id, roi_id, status)
             )
             conn.commit()
@@ -68,7 +78,7 @@ class DatabaseManager:
             for class_name, count in class_counts.items():
                 if count > 0:
                     cursor.execute(
-                        "INSERT INTO detections (cam_id, class_name, count) VALUES (?, ?, ?)",
+                        "INSERT INTO detections (cam_id, class_name, count) VALUES (%s, %s, %s)",
                         (cam_id, class_name, count)
                     )
             conn.commit()
@@ -103,10 +113,10 @@ class DatabaseManager:
             # 4. Alerts over time (last 7 days grouped by date)
             seven_days_ago = (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
             cursor.execute('''
-                SELECT date(timestamp) as event_date, COUNT(*) 
+                SELECT DATE(timestamp) as event_date, COUNT(*) 
                 FROM events 
-                WHERE status='Carfull' AND date(timestamp) >= ? 
-                GROUP BY date(timestamp)
+                WHERE status='Carfull' AND DATE(timestamp) >= %s 
+                GROUP BY DATE(timestamp)
                 ORDER BY event_date ASC
             ''', (seven_days_ago,))
             

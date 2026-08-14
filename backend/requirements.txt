@@ -6,3 +6,4 @@ shapely
 numpy
 pydantic
 requests
+psycopg2-binary
