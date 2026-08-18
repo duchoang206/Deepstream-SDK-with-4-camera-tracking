@@ -19,7 +19,8 @@ from core.behavior_analytics import behavior_engine
 from core.database import db_manager
 
 def sanitize_rtsp_url(url: str) -> str:
-    """Safely URL-encodes credentials in RTSP URLs to prevent parsing crashes."""
+    """Safely URL-encodes credentials and removes invalid whitespace in RTSP URLs."""
+    url = url.strip().replace(" ", "")
     if not url.startswith("rtsp://"):
         return url
     try:
@@ -147,6 +148,7 @@ class DeepStreamManager:
     def add_source(self, cam_id: str, rtsp_url: str) -> bool:
         """
         Dynamically adds an RTSP stream to the running nvstreammux at runtime.
+        Runs safely on the GLib main loop.
         """
         if not self.pipeline:
             print(f"[DeepStreamManager] Note: Adding source {cam_id} in standalone mode")
@@ -161,35 +163,41 @@ class DeepStreamManager:
             source_id = self.next_source_id
             self.next_source_id += 1
             
-            bin_name = f"source-bin-{source_id}"
-            source_bin = Gst.ElementFactory.make("nvurisrcbin", bin_name)
-            if not source_bin:
-                print(f"[DeepStreamManager] Failed to create nvurisrcbin for {cam_id}")
-                return False
-                
-            source_bin.set_property("uri", clean_url)
-            source_bin.set_property("source-id", source_id)
-            source_bin.set_property("rtsp-reconnect-interval", 5)
-            if source_bin.find_property("select-rtp-protocol"):
-                source_bin.set_property("select-rtp-protocol", 4)
+            self.cam_id_to_source_id[cam_id] = source_id
+            self.source_id_to_cam_id[source_id] = cam_id
             
-            source_bin.connect("pad-added", self._cb_newpad, source_id)
-            source_bin.connect("child-added", self._cb_child_added)
+            GLib.idle_add(self._add_source_glib, cam_id, clean_url, source_id)
+            return True
+
+    def _add_source_glib(self, cam_id, clean_url, source_id):
+        bin_name = f"source-bin-{source_id}"
+        source_bin = Gst.ElementFactory.make("nvurisrcbin", bin_name)
+        if not source_bin:
+            print(f"[DeepStreamManager] Failed to create nvurisrcbin for {cam_id}")
+            return False
             
-            self.pipeline.add(source_bin)
-            source_bin.sync_state_with_parent()
-            
+        source_bin.set_property("uri", clean_url)
+        source_bin.set_property("source-id", source_id)
+        source_bin.set_property("rtsp-reconnect-interval", 5)
+        if source_bin.find_property("select-rtp-protocol"):
+            source_bin.set_property("select-rtp-protocol", 4)
+        
+        source_bin.connect("pad-added", self._cb_newpad, source_id)
+        source_bin.connect("child-added", self._cb_child_added)
+        
+        self.pipeline.add(source_bin)
+        source_bin.sync_state_with_parent()
+        
+        with self.lock:
             self.sources[source_id] = {
                 "cam_id": cam_id,
                 "url": clean_url,
                 "bin": source_bin,
                 "pad": None
             }
-            self.cam_id_to_source_id[cam_id] = source_id
-            self.source_id_to_cam_id[source_id] = cam_id
             
-            print(f"[DeepStreamManager] Added camera {cam_id} as source_id {source_id} ({clean_url})")
-            return True
+        print(f"[DeepStreamManager] Added camera {cam_id} as source_id {source_id} ({clean_url})")
+        return False
 
     def _cb_child_added(self, child_proxy, obj, name, user_data=None):
         if "source" in name or "rtspsrc" in name:
@@ -232,6 +240,11 @@ class DeepStreamManager:
                 return False
                 
             source_id = self.cam_id_to_source_id[cam_id]
+            GLib.idle_add(self._delete_source_glib, cam_id, source_id)
+            return True
+
+    def _delete_source_glib(self, cam_id, source_id):
+        with self.lock:
             source_info = self.sources.get(source_id)
             if not source_info:
                 return False
@@ -249,8 +262,8 @@ class DeepStreamManager:
             del self.cam_id_to_source_id[cam_id]
             del self.source_id_to_cam_id[source_id]
             
-            print(f"[DeepStreamManager] Removed camera {cam_id} (source_id {source_id})")
-            return True
+        print(f"[DeepStreamManager] Removed camera {cam_id} source_id {source_id}")
+        return False
 
     def _metadata_probe(self, pad, info, u_data):
         """
