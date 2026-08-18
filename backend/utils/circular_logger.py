@@ -104,6 +104,8 @@ class CircularLogger:
         if self.cleanup_thread.is_alive():
             self.cleanup_thread.join(timeout=2)
 
+app_logger = CircularLogger()
+
 if __name__ == "__main__":
     # Test circular logger with a very small limit (e.g. 100 bytes)
     print("Testing CircularLogger with 100 bytes limit...")
