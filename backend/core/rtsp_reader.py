@@ -1,7 +1,10 @@
+import os
 import cv2
 import threading
 import time
 import queue
+
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
 class RTSPLatestFrameReader:
     """
