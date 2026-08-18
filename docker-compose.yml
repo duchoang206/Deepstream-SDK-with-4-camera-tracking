@@ -14,5 +14,45 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: yolo_deepstream_backend
+    restart: always
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ./backend:/app
+    environment:
+      - DISPLAY=$DISPLAY
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: yolo_mediamtx
+    restart: always
+    network_mode: host
+    volumes:
+      - ./services/mediamtx/mediamtx.yml:/mediamtx.yml
+
+  frontend:
+    image: node:20-alpine
+    container_name: yolo_frontend
+    restart: always
+    network_mode: host
+    working_dir: /app
+    volumes:
+      - ./web-dashboard:/app
+    command: sh -c "npm install && npm run dev"
+
 volumes:
   postgres_data:
