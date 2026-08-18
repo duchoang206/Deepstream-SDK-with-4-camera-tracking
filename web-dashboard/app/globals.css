@@ -81,6 +81,9 @@ body {
 
 .fms-nav-item {
   text-decoration: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
   color: var(--text-muted);
   font-weight: 500;
   font-size: 18px;

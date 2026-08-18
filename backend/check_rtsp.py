@@ -1,18 +1,33 @@
 import asyncio
-import subprocess
+import socket
+from urllib.parse import urlparse
 
-async def is_rtsp_valid_async(url, timeout=3):
+async def is_rtsp_valid_async(url: str, timeout: float = 2.0) -> bool:
     try:
-        process = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "quiet", "-rtsp_transport", "tcp", "-i", url,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL
-        )
-        try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
-            return process.returncode == 0
-        except asyncio.TimeoutError:
-            process.kill()
+        clean = url
+        if "@" in clean:
+            clean = "rtsp://" + clean.split("@", 1)[1]
+        
+        parsed = urlparse(clean)
+        host = parsed.hostname
+        port = parsed.port or 554
+        
+        if not host:
             return False
-    except Exception:
+            
+        loop = asyncio.get_running_loop()
+        
+        def check_tcp():
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            try:
+                res = s.connect_ex((host, int(port)))
+                s.close()
+                return res == 0
+            except Exception:
+                return False
+                
+        return await loop.run_in_executor(None, check_tcp)
+    except Exception as e:
+        print(f"[check_rtsp] Error checking {url}: {e}", flush=True)
         return False

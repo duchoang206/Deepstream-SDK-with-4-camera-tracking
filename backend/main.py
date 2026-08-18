@@ -1,3 +1,6 @@
+import faulthandler
+faulthandler.enable()
+
 import os
 import sys
 import uuid
@@ -15,6 +18,7 @@ from core.deepstream_engine import deepstream_manager, sanitize_rtsp_url
 from core.camera_calibrator import camera_calibrator
 from core.behavior_analytics import behavior_engine
 from core.reid_matcher import global_reid
+
 
 app = FastAPI(title="RTC VMS (R-SkyView) - Real-time Decoupled Multi-Camera Analytics", version="3.0")
 
@@ -84,10 +88,12 @@ async def _broadcast_to_set(target_set: Set[WebSocket], msg: str):
 async def startup_event():
     global loop
     loop = asyncio.get_running_loop()
+
+    # Wire DeepStream to the metadata broadcast callback
     deepstream_manager.metadata_callback = broadcast_metadata_sync
     deepstream_manager.event_callback = broadcast_event_sync
-    # deepstream_manager.start() moved to end of startup
-    # Pre-populate cameras from DB if existing
+
+    # Pre-populate cameras from DB
     db_cams = db_manager.get_all_cameras()
     for c in db_cams:
         cam_id = c["id"]
@@ -98,29 +104,86 @@ async def startup_event():
             "calibration": c.get("calibration_points"),
             "status": "online"
         }
+
+    # Collect all cameras for static pre-loading into the pipeline (safe DeepStream pattern)
+    # Only cameras reachable via TCP are added initially.
+    # nvinfer SIGABRT/Segfault when ALL nvurisrcbin sources are unreachable simultaneously.
+    initial_sources = []
+    offline_cameras = []
+
+    for cam_id, c in cameras.items():
+        rtsp_url = c["rtsp_url"]
+
         # Load calibration if available
-        calib_pts = c.get("calibration_points")
+        calib_pts = c.get("calibration")
         if calib_pts and isinstance(calib_pts, dict):
             camera_calibrator.set_calibration(
-                cam_id, 
-                calib_pts.get("src_points", []), 
+                cam_id,
+                calib_pts.get("src_points", []),
                 calib_pts.get("dst_points", [])
             )
-        # Load rules
+        # Load behavior rules
         rules = db_manager.get_rules_by_camera(cam_id)
         if rules:
             behavior_engine.set_rules(cam_id, rules)
-            
-        # Validate stream before adding to avoid DeepStream core dump
-        from check_rtsp import is_rtsp_valid_async
-        is_valid = await is_rtsp_valid_async(c["rtsp_url"], timeout=3)
-        if is_valid:
-            deepstream_manager.add_source(cam_id, c["rtsp_url"])
+
+        # Check reachability (8s timeout, 2 retries) before adding to pipeline.
+        # DeepStream nvinfer crashes if ALL sources are unreachable simultaneously.
+        # nvurisrcbin handles reconnect internally once in PLAYING state.
+        is_reachable = False
+        for attempt in range(2):
+            try:
+                from check_rtsp import is_rtsp_valid_async
+                is_reachable = await is_rtsp_valid_async(rtsp_url, timeout=8)
+                if is_reachable:
+                    break
+            except Exception:
+                is_reachable = False
+
+        if is_reachable:
+            initial_sources.append((cam_id, rtsp_url))
+            print(f"[Main] Camera {cam_id} reachable - will add to pipeline.", flush=True)
         else:
-            print(f"[Main] Warning: Camera {cam_id} is unreachable. Skipping DeepStream initialization.")
-            
-    print(f"[Main] DeepStream Manager started. Loaded {len(cameras)} cameras from database.")
-    deepstream_manager.start()
+            offline_cameras.append((cam_id, rtsp_url))
+            print(f"[Main] Camera {cam_id} unreachable at startup - will retry in background.", flush=True)
+
+    # Start DeepStream Pipeline with reachable cameras pre-loaded (NULL → PLAYING in one step).
+    # This avoids the SIGABRT caused by dynamic source add on a running nvinfer pipeline.
+    deepstream_manager.start(initial_sources=initial_sources if initial_sources else None)
+
+    # Schedule background retry for offline cameras
+    if offline_cameras:
+        asyncio.ensure_future(_retry_offline_cameras(offline_cameras))
+
+    print(f"[Main] Startup complete. {len(initial_sources)} cameras online, {len(offline_cameras)} retrying.", flush=True)
+
+
+async def _retry_offline_cameras(offline_list: list, interval: int = 30):
+    """Background task: retry adding offline cameras to the pipeline every `interval` seconds."""
+    remaining = list(offline_list)
+    while remaining:
+        await asyncio.sleep(interval)
+        still_offline = []
+        for cam_id, rtsp_url in remaining:
+            try:
+                from check_rtsp import is_rtsp_valid_async
+                is_reachable = await is_rtsp_valid_async(rtsp_url, timeout=5)
+            except Exception:
+                is_reachable = False
+
+            if is_reachable:
+                print(f"[Main] Camera {cam_id} is now reachable - adding to pipeline.", flush=True)
+                deepstream_manager.add_source(cam_id, rtsp_url)
+            else:
+                still_offline.append((cam_id, rtsp_url))
+
+        remaining = still_offline
+        if remaining:
+            print(f"[Main] Still waiting for {len(remaining)} offline camera(s) to come online.", flush=True)
+        else:
+            print("[Main] All cameras are now online.", flush=True)
+
+
 
 # --- WEBSOCKET ENDPOINTS ---
 @app.websocket("/ws/metadata")
@@ -151,57 +214,89 @@ async def websocket_events_endpoint(websocket: WebSocket):
 @app.post("/api/v1/streams/add")
 @app.post("/api/camera/add")
 async def add_camera(request: CameraAddRequest):
-    cam_id = str(uuid.uuid4())[:8]
-    clean_url = sanitize_rtsp_url(request.rtsp_url)
-    
-    # 1. Register Camera Stream in MediaMTX for direct WebRTC/WHEP streaming
     try:
-        res = requests.post(f"{MEDIAMTX_API}/add/{cam_id}", json={
-            "source": clean_url,
-            "sourceOnDemand": False,
-            "rtspTransport": "tcp"
-        }, timeout=4)
-        if res.status_code not in (200, 201):
-            requests.post(f"{MEDIAMTX_API}/patch/{cam_id}", json={"source": clean_url}, timeout=2)
+        cam_id = str(uuid.uuid4())[:8]
+        clean_url = sanitize_rtsp_url(request.rtsp_url)
+        
+        # 1. Register Camera Stream in MediaMTX for direct WebRTC/WHEP streaming
+        try:
+            res = requests.post(f"{MEDIAMTX_API}/add/{cam_id}", json={
+                "source": clean_url,
+                "sourceOnDemand": False,
+                "rtspTransport": "tcp"
+            }, timeout=4)
+            if res.status_code not in (200, 201):
+                requests.post(f"{MEDIAMTX_API}/patch/{cam_id}", json={"source": clean_url}, timeout=2)
+        except Exception as e:
+            print(f"[MediaMTX] Note: proxy path registration: {e}")
+
+        # 2. Pre-validate stream
+        try:
+            from check_rtsp import is_rtsp_valid_async
+            is_valid = await is_rtsp_valid_async(clean_url, timeout=3)
+
+            if is_valid:
+                deepstream_manager.add_source(cam_id, clean_url)
+            else:
+                print(f"[Main] Warning: Stream {clean_url} is unreachable. Saved to DB but not added to tracking.")
+        except Exception as e:
+            print(f"[Main] Note checking RTSP: {e}")
+
+        # 3. Save to DB regardless of validation (as requested by user)
+        try:
+            db_manager.save_camera(cam_id, request.name, clean_url)
+        except Exception as e:
+            print(f"[Main] Database save camera warning: {e}")
+
+        cameras[cam_id] = {
+            "id": cam_id,
+            "name": request.name,
+            "rtsp_url": clean_url,
+            "status": "online"
+        }
+        
+        return {"status": "success", "camera": cameras[cam_id]}
     except Exception as e:
-        print(f"[MediaMTX] Note: proxy path registration: {e}")
+        print(f"[Main] Error in add_camera: {e}")
+        raise HTTPException(status_code=400, detail=f"Lỗi khi thêm camera: {str(e)}")
 
-    # 2. Pre-validate stream to avoid DeepStream core dump for unreachable cameras
-    from check_rtsp import is_rtsp_valid_async
-    is_valid = await is_rtsp_valid_async(clean_url, timeout=3)
-    
-    if is_valid:
-        # Dynamically add stream to unified DeepStream nvstreammux
-        success = deepstream_manager.add_source(cam_id, clean_url)
-        if not success:
-            print(f"[Main] Warning: Failed to add valid stream {clean_url} to DeepStream.")
-    else:
-        print(f"[Main] Warning: Stream {clean_url} is unreachable. Saved to DB but not added to DeepStream pipeline.")
+class CameraUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    rtsp_url: Optional[str] = None
 
-    # 3. Save to DB regardless of validation (as requested by user)
-    db_manager.save_camera(cam_id, request.name, clean_url)
+@app.patch("/api/camera/{cam_id}")
+async def update_camera(cam_id: str, request: CameraUpdateRequest):
+    if cam_id not in cameras:
+        raise HTTPException(status_code=404, detail="Camera not found")
+        
+    cam = cameras[cam_id]
+    if request.name:
+        cam["name"] = request.name
+    if request.rtsp_url:
+        clean_url = sanitize_rtsp_url(request.rtsp_url)
+        cam["rtsp_url"] = clean_url
+        try:
+            requests.post(f"{MEDIAMTX_API}/patch/{cam_id}", json={"source": clean_url}, timeout=2)
+        except Exception:
+            pass
+        deepstream_manager.delete_source(cam_id)
+        deepstream_manager.add_source(cam_id, clean_url)
 
-    cameras[cam_id] = {
-        "id": cam_id,
-        "name": request.name,
-        "rtsp_url": clean_url,
-        "status": "online"
-    }
-    
-    return {"status": "success", "camera": cameras[cam_id]}
+    db_manager.save_camera(cam_id, cam["name"], cam["rtsp_url"])
+    return {"status": "success", "camera": cam}
 
 @app.delete("/api/v1/streams/{cam_id}")
 @app.delete("/api/camera/{cam_id}")
 async def delete_camera(cam_id: str):
     if cam_id not in cameras:
         raise HTTPException(status_code=404, detail="Camera not found")
-        
+
     deepstream_manager.delete_source(cam_id)
     try:
         requests.post(f"{MEDIAMTX_API}/delete/{cam_id}", timeout=2)
     except Exception:
         pass
-        
+
     db_manager.delete_camera(cam_id)
     del cameras[cam_id]
     return {"status": "success", "deleted_id": cam_id}
@@ -274,7 +369,7 @@ async def get_dashboard_analytics():
 
 @app.get("/api/analytics/classes")
 async def get_analytics_classes():
-    return {"status": "success", "labels": ["person", "car", "truck", "bus"]}
+    return {"status": "success", "labels": ["person"]}
 
 @app.get("/api/events/list")
 async def list_events(
@@ -300,6 +395,20 @@ async def get_track_history(global_id: int):
             "global_id": global_id,
             "trajectory": db_history
         }
+    }
+
+@app.get("/api/debug/pipeline")
+async def debug_pipeline():
+    """Debug endpoint: inspect DeepStream pipeline state and source mappings."""
+    manager = deepstream_manager
+    return {
+        "is_running": manager.is_running,
+        "pipeline_exists": manager.pipeline is not None,
+        "sources_count": len(manager.sources),
+        "cam_id_to_source_id": dict(manager.cam_id_to_source_id),
+        "source_id_to_cam_id": dict(manager.source_id_to_cam_id),
+        "debug_frame_count": getattr(manager, '_debug_frame_count', 0),
+        "cameras_in_memory": list(cameras.keys()),
     }
 
 if __name__ == "__main__":

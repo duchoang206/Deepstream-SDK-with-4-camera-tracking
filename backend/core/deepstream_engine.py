@@ -53,82 +53,133 @@ class DeepStreamManager:
     def __init__(self, metadata_callback: Optional[Callable[[dict], None]] = None, event_callback: Optional[Callable[[dict], None]] = None):
         self.metadata_callback = metadata_callback
         self.event_callback = event_callback
-        self.sources: Dict[int, dict] = {} # source_id -> {cam_id, url, bin, pad}
+        self.sources: Dict[int, dict] = {}
         self.cam_id_to_source_id: Dict[str, int] = {}
         self.source_id_to_cam_id: Dict[int, str] = {}
         self.next_source_id = 0
         self.lock = threading.RLock()
         self.is_running = False
+        self._is_playing = False  # Track if pipeline has been set to PLAYING
         self.pipeline = None
-        
-        try:
-            if 'Gst' in globals() and not Gst.is_initialized():
-                Gst.init(None)
-            if 'GLib' in globals():
-                self.loop = GLib.MainLoop()
-                self._build_pipeline()
-                self.thread = threading.Thread(target=self._run_loop, daemon=True)
-        except Exception as e:
-            print(f"[DeepStreamManager] Pipeline initialization deferred: {e}")
+        self.context = None
+        self.loop = None
+        self._gst_available = False
 
-    def start(self):
-        if hasattr(self, 'thread') and not self.is_running:
+        # Test if GStreamer is importable at all (does NOT build pipeline here)
+        try:
+            if 'Gst' in globals() and 'GLib' in globals():
+                self._gst_available = True
+                print("[DeepStreamManager] GStreamer/pyds available, pipeline will build on start()", flush=True)
+            else:
+                print("[DeepStreamManager] GStreamer not available, running in stub mode", flush=True)
+        except Exception as e:
+            print(f"[DeepStreamManager] GStreamer check failed: {e}", flush=True)
+
+    def start(self, initial_sources: Optional[List[tuple]] = None):
+        """Build pipeline, add all initial sources (while NULL), then start GLib loop.
+        
+        KEY INSIGHT: Sources MUST be added to the pipeline BEFORE set_state(PLAYING).
+        Adding sources dynamically to a PAUSED/PLAYING pipeline with nvinfer causes
+        a C-level SIGABRT in DeepStream. The safe pattern is:
+          1. Build pipeline (NULL state)
+          2. Add all sources (still NULL)
+          3. Start GLib loop → set_state(PLAYING) once, with all sources present
+        
+        For runtime dynamic add (user adds camera after startup), add_source()
+        uses context.invoke_full which is safe only on an already-PLAYING pipeline.
+        """
+        if self.is_running:
+            return
+        if not self._gst_available:
+            print("[DeepStreamManager] Skipping pipeline start - GStreamer not available", flush=True)
+            return
+        try:
+            if not Gst.is_initialized():
+                Gst.init(None)
+            self.context = GLib.MainContext.new()
+            self.loop = GLib.MainLoop.new(self.context, False)
+            self._build_pipeline()
+
+            # Add all initial sources BEFORE starting the GLib loop (pipeline is NULL here)
+            if initial_sources:
+                for cam_id, rtsp_url in initial_sources:
+                    self._add_source_static(cam_id, sanitize_rtsp_url(rtsp_url))
+                print(f"[DeepStreamManager] Added {len(initial_sources)} sources before loop start", flush=True)
+
+            self.thread = threading.Thread(target=self._run_loop, daemon=True, name="deepstream-glib-loop")
             self.thread.start()
+            print("[DeepStreamManager] Pipeline thread started", flush=True)
+        except Exception as e:
+            print(f"[DeepStreamManager] PIPELINE BUILD FAILED: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            self.pipeline = None  # Ensure None so add_source no-ops safely
+
 
     def _build_pipeline(self):
         self.pipeline = Gst.Pipeline(name="rtc-vms-pipeline")
-        
-        # 1. nvstreammux (Supports up to 32 parallel streams)
+
+        # 1. nvstreammux - batch up to 32 streams
         self.muxer = Gst.ElementFactory.make("nvstreammux", "unified-muxer")
+        if not self.muxer:
+            raise RuntimeError("[DeepStreamManager] Failed to create nvstreammux - DeepStream plugin missing")
         self.muxer.set_property("batch-size", 32)
         self.muxer.set_property("width", 1280)
         self.muxer.set_property("height", 720)
         self.muxer.set_property("batched-push-timeout", 40000)
         self.muxer.set_property("live-source", 1)
         self.pipeline.add(self.muxer)
-        
-        # 2. PGIE (Primary YOLO Detector)
+
+        # 2. nvinfer - Primary YOLO inference (reads .engine file)
         self.pgie = Gst.ElementFactory.make("nvinfer", "primary-yolo-detector")
+        if not self.pgie:
+            raise RuntimeError("[DeepStreamManager] Failed to create nvinfer - DeepStream plugin missing")
         config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models_config", "config_infer_primary.txt")
+        if not os.path.exists(config_path):
+            raise RuntimeError(f"[DeepStreamManager] nvinfer config not found: {config_path}")
         self.pgie.set_property("config-file-path", config_path)
         self.pipeline.add(self.pgie)
-        
-        # 3. nvtracker (NvDCF Tracker with Re-ID support)
+
+        # 3. nvtracker - NvDCF/ByteTracker per-stream tracking
         self.tracker = Gst.ElementFactory.make("nvtracker", "nvtracker-engine")
+        if not self.tracker:
+            raise RuntimeError("[DeepStreamManager] Failed to create nvtracker")
         tracker_config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models_config", "tracker_config.yml")
+        tracker_lib = "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
+        if not os.path.exists(tracker_lib):
+            raise RuntimeError(f"[DeepStreamManager] nvtracker lib not found: {tracker_lib}")
         self.tracker.set_property("ll-config-file", tracker_config_path)
-        self.tracker.set_property("ll-lib-file", "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so")
+        self.tracker.set_property("ll-lib-file", tracker_lib)
+        self.tracker.set_property("tracker-width", 640)
+        self.tracker.set_property("tracker-height", 384)
+        self.tracker.set_property("gpu-id", 0)
         self.pipeline.add(self.tracker)
-        
-        # 4. nvdsanalytics
-        self.analytics = Gst.ElementFactory.make("nvdsanalytics", "analytics-engine")
-        analytics_config = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models_config", "config_nvdsanalytics.txt")
-        if not os.path.exists(analytics_config):
-            with open(analytics_config, "w") as f:
-                f.write("[property]\nenable=1\nconfig-width=1280\nconfig-height=720\nosd-mode=2\ndisplay-font-size=12\n")
-        self.analytics.set_property("config-file", analytics_config)
-        self.pipeline.add(self.analytics)
-        
-        # 5. fakesink (Headless execution: 0 NVENC load, zero delay)
+
+        # 4. fakesink - headless (no display, no NVENC encode)
         self.sink = Gst.ElementFactory.make("fakesink", "headless-sink")
+        if not self.sink:
+            raise RuntimeError("[DeepStreamManager] Failed to create fakesink")
         self.sink.set_property("sync", False)
         self.sink.set_property("async", False)
         self.pipeline.add(self.sink)
-        
-        # Link pipeline core
-        self.muxer.link(self.pgie)
-        self.pgie.link(self.tracker)
-        self.tracker.link(self.analytics)
-        self.analytics.link(self.sink)
-        
-        # Add metadata probe on analytics src pad
-        analytics_src_pad = self.analytics.get_static_pad("src")
-        analytics_src_pad.add_probe(Gst.PadProbeType.BUFFER, self._metadata_probe, 0)
-        
-        # Bus message handler
-        bus = self.pipeline.get_bus()
-        bus.add_signal_watch()
-        bus.connect("message", self._bus_call)
+
+        # Link: muxer -> pgie -> tracker -> fakesink
+        if not self.muxer.link(self.pgie):
+            raise RuntimeError("[DeepStreamManager] Failed to link muxer -> pgie")
+        if not self.pgie.link(self.tracker):
+            raise RuntimeError("[DeepStreamManager] Failed to link pgie -> tracker")
+        if not self.tracker.link(self.sink):
+            raise RuntimeError("[DeepStreamManager] Failed to link tracker -> fakesink")
+
+        # Attach metadata probe to tracker src pad
+        tracker_src_pad = self.tracker.get_static_pad("src")
+        if not tracker_src_pad:
+            raise RuntimeError("[DeepStreamManager] Could not get tracker src pad")
+        tracker_src_pad.add_probe(Gst.PadProbeType.BUFFER, self._metadata_probe, 0)
+        print("[DeepStreamManager] Pipeline built successfully: muxer->pgie->nvtracker->fakesink", flush=True)
+        # NOTE: Bus watch is set up in _run_loop() within the GLib main context thread.
+        # Do NOT call bus.add_signal_watch() here (wrong thread context -> segfault).
+
 
     def _bus_call(self, bus, message):
         t = message.type
@@ -141,37 +192,93 @@ class DeepStreamManager:
 
     def _run_loop(self):
         if self.pipeline:
-            self.pipeline.set_state(Gst.State.PLAYING)
+            self.context.push_thread_default()
+            # Re-attach bus watch from within the loop context
+            bus = self.pipeline.get_bus()
+            bus.add_watch(GLib.PRIORITY_DEFAULT, self._bus_call_context)
+
+            if self.sources:
+                # Sources were pre-loaded before loop: go straight to PLAYING
+                ret = self.pipeline.set_state(Gst.State.PLAYING)
+                self._is_playing = True
+                print(f"[DeepStreamManager] Pipeline set_state(PLAYING) with {len(self.sources)} sources, ret={ret}", flush=True)
+            else:
+                # No initial sources: start PAUSED, wait for first dynamic add
+                ret = self.pipeline.set_state(Gst.State.PAUSED)
+                print(f"[DeepStreamManager] Pipeline set_state(PAUSED) - no initial sources, ret={ret}", flush=True)
+
             self.is_running = True
-            print("[DeepStreamManager] Unified Headless Pipeline PLAYING")
             self.loop.run()
+            print("[DeepStreamManager] GLib main loop exited", flush=True)
+
+    def _bus_call_context(self, bus, message):
+        """Bus callback for use with add_watch() inside GLib main context."""
+        return self._bus_call(bus, message)
+
+    def _add_source_static(self, cam_id: str, clean_url: str) -> bool:
+        """
+        Add a source to the pipeline while it is still in NULL state (before GLib loop).
+        This is the SAFE path for startup sources. The pipeline state will be set to
+        PLAYING by _run_loop() after all sources are added.
+        """
+        source_id = self.next_source_id
+        self.next_source_id += 1
+
+        source_bin = Gst.ElementFactory.make("nvurisrcbin", f"uri-decode-bin-{source_id}")
+        if not source_bin:
+            print(f"[DeepStreamManager] Failed to create nvurisrcbin for {cam_id}", flush=True)
+            return False
+
+        source_bin.set_property("uri", clean_url)
+        source_bin.set_property("source-id", source_id)
+        source_bin.set_property("rtsp-reconnect-interval", 5)
+        if source_bin.find_property("latency"):
+            source_bin.set_property("latency", 100)
+        if source_bin.find_property("drop-frame-interval"):
+            source_bin.set_property("drop-frame-interval", 0)
+
+        source_bin.connect("pad-added", self._cb_newpad, source_id)
+        self.pipeline.add(source_bin)
+
+        # Request a sink pad from muxer now (while NULL) and link when pad-added fires
+        # We pre-request here so it's ready when the src pad negotiates
+        self._pending_sink_pads = getattr(self, '_pending_sink_pads', {})
+        self._pending_sink_pads[source_id] = self.muxer.get_request_pad(f"sink_{source_id}")
+
+        self.cam_id_to_source_id[cam_id] = source_id
+        self.source_id_to_cam_id[source_id] = cam_id
+        self.sources[source_id] = {
+            "cam_id": cam_id,
+            "url": clean_url,
+            "bin": source_bin,
+            "pad": None
+        }
+        print(f"[DeepStreamManager] Static-added camera {cam_id} as source_id {source_id} (pipeline NULL)", flush=True)
+        return True
 
     def add_source(self, cam_id: str, rtsp_url: str) -> bool:
         """
         Dynamically adds an RTSP stream to the running nvstreammux at runtime.
-        Runs safely on the GLib main loop.
+        Only called for cameras added by user AFTER startup. Runs on the GLib main loop.
         """
         if not self.pipeline:
             print(f"[DeepStreamManager] Note: Adding source {cam_id} in standalone mode")
             return True
-            
-        print(f"DEBUG ADD_SOURCE CALLED for {cam_id}", flush=True)
-            
+
         with self.lock:
             if cam_id in self.cam_id_to_source_id:
                 print(f"[DeepStreamManager] Camera {cam_id} is already in pipeline.")
                 return True
-                
+
             clean_url = sanitize_rtsp_url(rtsp_url)
             source_id = self.next_source_id
             self.next_source_id += 1
-            
-            self.cam_id_to_source_id[cam_id] = source_id
-            self.source_id_to_cam_id[source_id] = cam_id
-            if not self.is_running:
-                self._add_source_glib(cam_id, clean_url, source_id)
+
+            if hasattr(self, 'context') and self.context and self._is_playing:
+                self.context.invoke_full(GLib.PRIORITY_DEFAULT, self._add_source_glib, cam_id, clean_url, source_id)
             else:
-                GLib.idle_add(self._add_source_glib, cam_id, clean_url, source_id)
+                # Pipeline not yet playing: add statically
+                self._add_source_static(cam_id, clean_url)
             return True
 
     def _add_source_glib(self, cam_id, clean_url, source_id):
@@ -183,60 +290,58 @@ class DeepStreamManager:
             
         source_bin.set_property("uri", clean_url)
         source_bin.set_property("source-id", source_id)
-        source_bin.set_property("rtsp-reconnect-interval", 0)
-        if source_bin.find_property("select-rtp-protocol"):
-            source_bin.set_property("select-rtp-protocol", 4)
+        source_bin.set_property("rtsp-reconnect-interval", 5)
+        if source_bin.find_property("latency"):
+            source_bin.set_property("latency", 100)
+        if source_bin.find_property("drop-frame-interval"):
+            source_bin.set_property("drop-frame-interval", 0)
         
         source_bin.connect("pad-added", self._cb_newpad, source_id)
-        # source_bin.connect("child-added", self._cb_child_added)
         
         self.pipeline.add(source_bin)
-        if self.is_running:
-            source_bin.sync_state_with_parent()
+        # Set source to PAUSED first so it can negotiate caps without pipeline being PLAYING yet
+        source_bin.set_state(Gst.State.PAUSED)
         
         with self.lock:
+            self.cam_id_to_source_id[cam_id] = source_id
+            self.source_id_to_cam_id[source_id] = cam_id
             self.sources[source_id] = {
                 "cam_id": cam_id,
                 "url": clean_url,
                 "bin": source_bin,
                 "pad": None
             }
-            
+
         print(f"[DeepStreamManager] Added camera {cam_id} as source_id {source_id} ({clean_url})")
         return False
 
-    def _cb_child_added(self, child_proxy, obj, name, user_data=None):
-        if "source" in name or "rtspsrc" in name:
-            obj.set_property("drop-on-latency", True)
-            if obj.find_property("protocols"):
-                obj.set_property("protocols", 4)
-            if obj.find_property("latency"):
-                obj.set_property("latency", 100)
-
     def _cb_newpad(self, decodebin, decoder_src_pad, source_id):
-        print(f"[DeepStreamManager] pad-added signal received for source {source_id}", flush=True)
-        caps = decoder_src_pad.get_current_caps()
-        if not caps:
-            caps = decoder_src_pad.query_caps()
-        if caps and caps.get_size() > 0:
-            gst_struct = caps.get_structure(0)
-            name = gst_struct.get_name()
-            print(f"[DeepStreamManager] Pad caps: {name}", flush=True)
-            if "video" not in name:
-                return
-        else:
-            print(f"[DeepStreamManager] Warning: No caps on pad for source {source_id}", flush=True)
+        pad_name_src = decoder_src_pad.get_name()
+        print(f"[DeepStreamManager] pad-added signal received for source {source_id}: {pad_name_src}", flush=True)
+        if pad_name_src.startswith("audio"):
+            return
 
-        pad_name = f"sink_{source_id}"
-        sink_pad = self.muxer.get_static_pad(pad_name)
-        if not sink_pad:
-            sink_pad = self.muxer.get_request_pad(pad_name)
-            
-        if sink_pad and not sink_pad.is_linked():
-            decoder_src_pad.link(sink_pad)
-            if source_id in self.sources:
-                self.sources[source_id]["pad"] = sink_pad
-            print(f"[DeepStreamManager] Linked pad {pad_name} for source {source_id}")
+        with self.lock:
+            # Use pre-requested pad (static startup) or request a new one (dynamic add)
+            pending = getattr(self, '_pending_sink_pads', {})
+            sink_pad = pending.pop(source_id, None) or self.muxer.get_request_pad(f"sink_{source_id}")
+
+            if sink_pad and not sink_pad.is_linked():
+                ret = decoder_src_pad.link(sink_pad)
+                if source_id in self.sources:
+                    self.sources[source_id]["pad"] = sink_pad
+                print(f"[DeepStreamManager] Successfully linked pad sink_{source_id} for source {source_id}, ret: {ret}", flush=True)
+
+                # Now that pad is linked, set source to PLAYING
+                src_info = self.sources.get(source_id)
+                if src_info and src_info.get("bin"):
+                    src_info["bin"].set_state(Gst.State.PLAYING)
+
+                # If first source just linked, transition entire pipeline PAUSED → PLAYING
+                if not self._is_playing:
+                    self._is_playing = True
+                    play_ret = self.pipeline.set_state(Gst.State.PLAYING)
+                    print(f"[DeepStreamManager] First pad linked - pipeline set_state(PLAYING) ret={play_ret}", flush=True)
 
     def delete_source(self, cam_id: str) -> bool:
         """
@@ -250,7 +355,10 @@ class DeepStreamManager:
                 return False
                 
             source_id = self.cam_id_to_source_id[cam_id]
-            GLib.idle_add(self._delete_source_glib, cam_id, source_id)
+            if hasattr(self, 'context') and self.context:
+                self.context.invoke_full(GLib.PRIORITY_DEFAULT, self._delete_source_glib, cam_id, source_id)
+            else:
+                self._delete_source_glib(cam_id, source_id)
             return True
 
     def _delete_source_glib(self, cam_id, source_id):
@@ -262,38 +370,33 @@ class DeepStreamManager:
             source_bin = source_info["bin"]
             sink_pad = source_info.get("pad")
             
+            if source_bin:
+                source_bin.set_state(Gst.State.NULL)
+                self.pipeline.remove(source_bin)
+                
             if sink_pad:
                 self.muxer.release_request_pad(sink_pad)
                 
-            source_bin.set_state(Gst.State.NULL)
-            self.pipeline.remove(source_bin)
-            
-            del self.sources[source_id]
-            del self.cam_id_to_source_id[cam_id]
-            del self.source_id_to_cam_id[source_id]
-            
-        print(f"[DeepStreamManager] Removed camera {cam_id} source_id {source_id}")
+            self.sources.pop(source_id, None)
+            self.cam_id_to_source_id.pop(cam_id, None)
+            self.source_id_to_cam_id.pop(source_id, None)
+            print(f"[DeepStreamManager] Successfully deleted source {cam_id} (source_id: {source_id})")
         return False
 
     def _metadata_probe(self, pad, info, u_data):
-        """
-        DeepStream C Pad Probe:
-        1. Extracts Bounding Boxes + IDs
-        2. Applies MTMC Cross-Camera Association & Homography Projection
-        3. Executes Behavior Analytics (Intrusion, Tripwires, Dwell Time, Density)
-        4. Broadcasts telemetry to WebSockets and PostgreSQL
-        """
         try:
             gst_buffer = info.get_buffer()
             if not gst_buffer:
                 return Gst.PadProbeReturn.OK
 
             batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(gst_buffer))
+            if not batch_meta:
+                return Gst.PadProbeReturn.OK
             l_frame = batch_meta.frame_meta_list
-            
+
             timestamp_ms = int(time.time() * 1000)
             streams_payload = []
-            
+
             while l_frame is not None:
                 try:
                     frame_meta = pyds.NvDsFrameMeta.cast(l_frame.data)
@@ -302,51 +405,98 @@ class DeepStreamManager:
 
                 source_id = frame_meta.source_id
                 cam_id = self.source_id_to_cam_id.get(source_id, f"cam_{source_id}")
-                frame_w = max(1, frame_meta.source_frame_width)
-                frame_h = max(1, frame_meta.source_frame_height)
-                
+
+                # Safe frame dimension: use muxer output size as fallback
+                frame_w = frame_meta.source_frame_width
+                frame_h = frame_meta.source_frame_height
+                if frame_w == 0 or frame_h == 0:
+                    frame_w = 1280
+                    frame_h = 720
+
                 raw_detections = []
                 l_obj = frame_meta.obj_meta_list
-                
+
                 while l_obj is not None:
                     try:
                         obj_meta = pyds.NvDsObjectMeta.cast(l_obj.data)
                     except StopIteration:
                         break
-                        
-                    # Filter person (class_id 0)
-                    if obj_meta.class_id == 0 or obj_meta.obj_label.lower() == "person":
+
+                    # class_id == 0 is PERSON in COCO/YOLOv8
+                    class_id = obj_meta.class_id
+                    is_person = (class_id == 0)
+
+                    # Fallback: check label text if class_id filtering not working
+                    if not is_person:
+                        label = obj_meta.obj_label or ""
+                        is_person = "person" in label.lower()
+
+                    if is_person:
                         rect = obj_meta.rect_params
-                        norm_x = max(0.0, min(1.0, rect.left / frame_w))
-                        norm_y = max(0.0, min(1.0, rect.top / frame_h))
-                        norm_w = max(0.0, min(1.0, rect.width / frame_w))
-                        norm_h = max(0.0, min(1.0, rect.height / frame_h))
-                        
+                        # object_id is 64-bit uint; mask to 32-bit for JS/JSON safety
+                        local_id = int(obj_meta.object_id) & 0xFFFFFFFF
+
+                        left   = max(0.0, float(rect.left))
+                        top    = max(0.0, float(rect.top))
+                        width  = max(1.0, float(rect.width))
+                        height = max(1.0, float(rect.height))
+
+                        norm_x = min(1.0, left / frame_w)
+                        norm_y = min(1.0, top / frame_h)
+                        norm_w = min(1.0 - norm_x, width / frame_w)
+                        norm_h = min(1.0 - norm_y, height / frame_h)
+
                         raw_detections.append({
-                            "local_id": int(obj_meta.object_id),
+                            "local_id": local_id,
                             "class": "person",
-                            "bbox": [norm_x, norm_y, norm_w, norm_h],
-                            "confidence": float(obj_meta.confidence)
+                            "bbox": [round(norm_x, 4), round(norm_y, 4),
+                                     round(norm_w, 4), round(norm_h, 4)],
+                            "confidence": float(getattr(obj_meta, 'confidence', 0.9))
                         })
-                        
+
                     try:
                         l_obj = l_obj.next
                     except StopIteration:
                         break
 
-                # 1. Multi-Target Multi-Camera (MTMC) Fusion & Spatial Mapping
+                # Debug heartbeat every ~5 seconds (approx every 150 frames at 30fps)
+                if not hasattr(self, '_debug_frame_count'):
+                    self._debug_frame_count = 0
+                self._debug_frame_count += 1
+                if self._debug_frame_count % 150 == 0:
+                    print(f"[Probe] cam_id={cam_id} source_id={source_id} "
+                          f"frame={frame_w}x{frame_h} "
+                          f"detections={len(raw_detections)} "
+                          f"total_objs={sum(1 for _ in iter(lambda: frame_meta.obj_meta_list, None) if False)}", flush=True)
+
+                # MTMC Fusion & Spatial Mapping
+                objects_list = []
+                tripwire_stats = {}
+
                 if raw_detections:
-                    augmented_dets = global_reid.process_camera_detections(cam_id, raw_detections)
-                    objects_list = []
-                    
+                    try:
+                        augmented_dets = global_reid.process_camera_detections(cam_id, raw_detections)
+                    except Exception as reid_err:
+                        print(f"[Probe] ReID error for {cam_id}: {reid_err}", flush=True)
+                        # Fallback: assign local IDs directly
+                        augmented_dets = []
+                        for d in raw_detections:
+                            d2 = dict(d)
+                            d2["global_id"] = d["local_id"]
+                            d2["floor_x"] = d["bbox"][0] + d["bbox"][2] / 2.0
+                            d2["floor_y"] = d["bbox"][1] + d["bbox"][3]
+                            augmented_dets.append(d2)
+
                     for d in augmented_dets:
                         gid = d["global_id"]
                         fx = d.get("floor_x", 0.5)
                         fy = d.get("floor_y", 0.5)
-                        
-                        # Record trajectory waypoint in DB
-                        db_manager.log_track_position(gid, cam_id, fx, fy)
-                        
+
+                        try:
+                            db_manager.log_track_position(gid, cam_id, fx, fy)
+                        except Exception:
+                            pass
+
                         objects_list.append({
                             "id": gid,
                             "local_id": d["local_id"],
@@ -355,25 +505,28 @@ class DeepStreamManager:
                             "y": round(d["bbox"][1], 4),
                             "w": round(d["bbox"][2], 4),
                             "h": round(d["bbox"][3], 4),
-                            "floor_x": fx,
-                            "floor_y": fy,
+                            "floor_x": round(fx, 4),
+                            "floor_y": round(fy, 4),
                             "confidence": round(d.get("confidence", 0.9), 2)
                         })
-                    
-                    # 2. Behavior Analytics Processing
-                    triggered_events, tripwire_stats = behavior_engine.process_frame(cam_id, objects_list)
-                    
-                    # Log events to PostgreSQL
-                    for ev in triggered_events:
-                        db_manager.log_event(ev)
-                        if self.event_callback:
-                            self.event_callback(ev)
-                    
-                    streams_payload.append({
-                        "cam_id": cam_id,
-                        "objects": objects_list,
-                        "tripwire_stats": tripwire_stats
-                    })
+
+                    try:
+                        triggered_events, tripwire_stats = behavior_engine.process_frame(cam_id, objects_list)
+                        for ev in triggered_events:
+                            try:
+                                db_manager.log_event(ev)
+                            except Exception:
+                                pass
+                            if self.event_callback:
+                                self.event_callback(ev)
+                    except Exception as be_err:
+                        print(f"[Probe] BehaviorEngine error for {cam_id}: {be_err}", flush=True)
+
+                streams_payload.append({
+                    "cam_id": cam_id,
+                    "objects": objects_list,
+                    "tripwire_stats": tripwire_stats
+                })
 
                 try:
                     l_frame = l_frame.next
@@ -387,7 +540,9 @@ class DeepStreamManager:
                 })
 
         except Exception as e:
-            pass
+            print(f"[Probe] CRITICAL error in _metadata_probe: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
         return Gst.PadProbeReturn.OK
 

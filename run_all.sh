@@ -1,52 +1,21 @@
 #!/bin/bash
 
-# Define cleanup function to kill background processes on exit
-cleanup() {
-    echo -e "\n[System] Stopping all services..."
-    # Kill all background jobs started by this script
-    kill $(jobs -p) 2>/dev/null
-    exit
-}
-
-# Catch Ctrl+C and exit signals to run cleanup
-trap cleanup SIGINT SIGTERM EXIT
-
-# Load Node.js (nvm) if it exists
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
 echo "==================================================="
-echo "  Starting Vision AI YOLO System (Dynamic Backend) "
+echo "  Starting Vision AI YOLO System (Docker Compose)  "
 echo "==================================================="
 
-# 1. Start PostgreSQL Database
-echo -e "\n[1/4] Starting PostgreSQL Database..."
-sudo docker compose up -d
-sleep 2
+# 1. Start all containers in background
+echo -e "\n[1/2] Starting Docker Compose Services (Postgres, MediaMTX, DeepStream Backend, Web Dashboard)..."
+sudo docker compose up -d --remove-orphans
 
-# 2. Start MediaMTX WebRTC Server
-echo -e "\n[2/4] Starting MediaMTX (Port 8081 & 9997)..."
-cd services/mediamtx
-./mediamtx mediamtx.yml &
-cd ../..
+if [ $? -ne 0 ]; then
+    echo "[Error] Docker compose failed to start."
+    exit 1
+fi
 
-# Wait 1 second to ensure MediaMTX API is up
-sleep 1
-
-# 3. Start FastAPI Backend
-echo -e "\n[3/4] Starting FastAPI Backend (Port 8000)..."
-cd backend
-python3 main.py &
-cd ..
-
-# Wait 2 seconds to ensure Backend is ready
-sleep 2
-
-# 4. Start Next.js Frontend
-echo -e "\n[4/4] Starting Next.js Frontend (Port 3000)..."
-cd web-dashboard
-npm run dev &
-cd ..
+echo -e "\n[2/2] Checking container statuses..."
+sleep 3
+sudo docker compose ps
 
 echo -e "\n==================================================="
 echo "  All services started successfully!"
@@ -54,8 +23,6 @@ echo "  - Web Dashboard : http://localhost:3000"
 echo "  - Backend API   : http://localhost:8000/docs"
 echo "  - WebRTC Server : http://localhost:8081"
 echo ""
-echo "  Press [Ctrl + C] to stop all services."
+echo "  To view logs    : sudo docker compose logs -f"
+echo "  To stop services: sudo docker compose down"
 echo "==================================================="
-
-# Keep the script running and wait for background processes
-wait

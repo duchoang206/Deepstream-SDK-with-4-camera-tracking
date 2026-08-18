@@ -2,16 +2,18 @@ import psycopg2
 import psycopg2.extras
 import os
 import json
+import time
 import threading
 from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Optional
+import queue
 
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     """
-    PostgreSQL Storage Manager (Replaces Elasticsearch).
+    Unified Database Layer using PostgreSQL with PostGIS & JSONB.
     Stores metadata, analytics events, camera calibration configs,
     rules (ROI & Tripwires), and multi-camera trajectory logs.
     """
@@ -21,12 +23,14 @@ class DatabaseManager:
         self._init_db()
 
     def _get_connection(self):
-        try:
-            return psycopg2.connect(self.db_url)
-        except Exception as e:
-            # If postgres is initializing or offline during testing, don't crash
-            logger.error(f"Error connecting to PostgreSQL: {e}")
-            raise
+        for attempt in range(5):
+            try:
+                return psycopg2.connect(self.db_url)
+            except Exception as e:
+                if attempt == 4:
+                    logger.error(f"Error connecting to PostgreSQL after 5 attempts: {e}")
+                    raise
+                time.sleep(0.5)
 
     def _init_db(self):
         try:
@@ -181,17 +185,19 @@ class DatabaseManager:
             try:
                 conn = self._get_connection()
                 cursor = conn.cursor()
+                r_type = rule.get("type") or rule.get("rule_type") or "intrusion"
                 cursor.execute('''
                     INSERT INTO rules (id, cam_id, rule_type, name, points, target_objects, threshold, direction)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO UPDATE SET 
+                        rule_type = EXCLUDED.rule_type,
                         name = EXCLUDED.name,
                         points = EXCLUDED.points,
                         target_objects = EXCLUDED.target_objects,
                         threshold = EXCLUDED.threshold,
                         direction = EXCLUDED.direction
                 ''', (
-                    rule["id"], rule["cam_id"], rule["type"], rule["name"],
+                    rule["id"], rule["cam_id"], r_type, rule["name"],
                     json.dumps(rule.get("points", [])),
                     json.dumps(rule.get("target_objects", ["person"])),
                     rule.get("threshold", 10.0),
@@ -221,7 +227,13 @@ class DatabaseManager:
                 cursor.execute("SELECT * FROM rules WHERE cam_id = %s", (cam_id,))
                 rows = cursor.fetchall()
                 conn.close()
-                return [dict(r) for r in rows]
+                res = []
+                for r in rows:
+                    d = dict(r)
+                    if "rule_type" in d and ("type" not in d or not d["type"]):
+                        d["type"] = d["rule_type"]
+                    res.append(d)
+                return res
             except Exception:
                 return []
 

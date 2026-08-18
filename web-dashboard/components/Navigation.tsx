@@ -1,33 +1,35 @@
 'use client';
 
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import { useLanguage } from './LanguageContext';
+import { useTab } from './TabContext';
 
 export default function Navigation() {
-  const pathname = usePathname();
   const { t } = useLanguage();
+  const { activeTab, setActiveTab } = useTab();
 
   return (
     <nav className="fms-nav">
-      <Link 
-        href="/monitor" 
-        className={`fms-nav-item ${pathname === '/monitor' ? 'active' : ''}`}
+      <button 
+        type="button"
+        onClick={() => setActiveTab('monitor')} 
+        className={`fms-nav-item ${activeTab === 'monitor' ? 'active' : ''}`}
       >
         {t.nav.monitor}
-      </Link>
-      <Link 
-        href="/building" 
-        className={`fms-nav-item ${pathname === '/building' ? 'active' : ''}`}
+      </button>
+      <button 
+        type="button"
+        onClick={() => setActiveTab('building')} 
+        className={`fms-nav-item ${activeTab === 'building' ? 'active' : ''}`}
       >
         {t.nav.building}
-      </Link>
-      <Link 
-        href="/analytics" 
-        className={`fms-nav-item ${pathname === '/analytics' ? 'active' : ''}`}
+      </button>
+      <button 
+        type="button"
+        onClick={() => setActiveTab('analytics')} 
+        className={`fms-nav-item ${activeTab === 'analytics' ? 'active' : ''}`}
       >
         {t.nav.analytics}
-      </Link>
+      </button>
     </nav>
   );
 }
