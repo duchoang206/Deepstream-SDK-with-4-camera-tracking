@@ -1,5 +1,7 @@
-# Minimal MediaMTX Configuration - Only WebRTC enabled
+# MediaMTX Configuration for RTC VMS (R-SkyView) - Ultra-Low-Latency WebRTC/WHEP Gateway
 rtsp: yes
+rtspAddress: :8554
+
 rtmp: no
 hls: no
 srt: no
@@ -13,6 +15,4 @@ webrtcICEUDPMuxAddress: :18189
 webrtcICETCPMuxAddress: :18189
 
 paths:
-  # Paths will be dynamically added via API by FastAPI Backend
-  # Empty paths block to allow dynamic addition
-
+  all_others:
