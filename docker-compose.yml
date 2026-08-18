@@ -32,6 +32,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ./backend:/app
     environment:
+      - PYTHONUNBUFFERED=1
       - DISPLAY=$DISPLAY
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
