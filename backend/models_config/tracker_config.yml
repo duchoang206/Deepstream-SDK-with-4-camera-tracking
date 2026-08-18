@@ -1,0 +1,14 @@
+%YAML:1.0
+  
+NvDCF:
+  maxTargetsPerStream: 30 # Max number of targets to track per stream
+  filterLr: 0.11 # learning rate for DCF filter in exponential moving average
+  gaussianSigma: 0.75 # Standard deviation for Gaussian for desired response when creating DCF filter
+  minDetectorConfidence: 0.0 # If the confidence of a detector bbox is lower than this, then it won't be considered for tracking
+  minTrackerConfidence: 0.6 # If the confidence of an object tracker is lower than this on the fly, then it will be tracked in shadow mode
+  featureImgSizeLevel: 1 # Size of a feature image
+  SearchRegionPaddingScale: 3 # Search region size
+  maxShadowTrackingAge: 9 # Max length of shadow tracking
+  probationAge: 0 # Once the tracker age reaches this, the tracker is considered to be valid
+  earlyTerminationAge: 0 # Early termination age
+  minVisibiilty4Tracking: 0.5
