@@ -86,8 +86,7 @@ async def startup_event():
     loop = asyncio.get_running_loop()
     deepstream_manager.metadata_callback = broadcast_metadata_sync
     deepstream_manager.event_callback = broadcast_event_sync
-    deepstream_manager.start()
-    
+    # deepstream_manager.start() moved to end of startup
     # Pre-populate cameras from DB if existing
     db_cams = db_manager.get_all_cameras()
     for c in db_cams:
@@ -112,7 +111,16 @@ async def startup_event():
         if rules:
             behavior_engine.set_rules(cam_id, rules)
             
+        # Validate stream before adding to avoid DeepStream core dump
+        from check_rtsp import is_rtsp_valid_async
+        is_valid = await is_rtsp_valid_async(c["rtsp_url"], timeout=3)
+        if is_valid:
+            deepstream_manager.add_source(cam_id, c["rtsp_url"])
+        else:
+            print(f"[Main] Warning: Camera {cam_id} is unreachable. Skipping DeepStream initialization.")
+            
     print(f"[Main] DeepStream Manager started. Loaded {len(cameras)} cameras from database.")
+    deepstream_manager.start()
 
 # --- WEBSOCKET ENDPOINTS ---
 @app.websocket("/ws/metadata")
@@ -158,12 +166,19 @@ async def add_camera(request: CameraAddRequest):
     except Exception as e:
         print(f"[MediaMTX] Note: proxy path registration: {e}")
 
-    # 2. Dynamically add stream to unified DeepStream nvstreammux
-    success = deepstream_manager.add_source(cam_id, clean_url)
-    if not success:
-        raise HTTPException(status_code=500, detail=f"Không thể khởi tạo luồng DeepStream cho {clean_url}")
+    # 2. Pre-validate stream to avoid DeepStream core dump for unreachable cameras
+    from check_rtsp import is_rtsp_valid_async
+    is_valid = await is_rtsp_valid_async(clean_url, timeout=3)
+    
+    if is_valid:
+        # Dynamically add stream to unified DeepStream nvstreammux
+        success = deepstream_manager.add_source(cam_id, clean_url)
+        if not success:
+            print(f"[Main] Warning: Failed to add valid stream {clean_url} to DeepStream.")
+    else:
+        print(f"[Main] Warning: Stream {clean_url} is unreachable. Saved to DB but not added to DeepStream pipeline.")
 
-    # 3. Save to DB
+    # 3. Save to DB regardless of validation (as requested by user)
     db_manager.save_camera(cam_id, request.name, clean_url)
 
     cameras[cam_id] = {
