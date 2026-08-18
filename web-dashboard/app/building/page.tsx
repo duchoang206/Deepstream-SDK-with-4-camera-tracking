@@ -2,106 +2,84 @@
 
 import React, { useEffect, useState } from 'react';
 import { useLanguage } from '../../components/LanguageContext';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, Layers, ShieldAlert, Compass, Plus, Trash2, CheckCircle2 } from 'lucide-react';
 
 type Camera = {
   id: string;
   name: string;
   rtsp_url: string;
+  calibration?: any;
+};
+
+type Rule = {
+  id: string;
+  type: string; // 'intrusion' | 'tripwire' | 'dwell_time' | 'density'
+  name: string;
+  points: number[][];
+  threshold?: number;
+  direction?: string;
 };
 
 export default function BuildingPage() {
   const [cameras, setCameras] = useState<Camera[]>([]);
-  const [activeTab, setActiveTab] = useState('camera');
+  const [activeTab, setActiveTab] = useState<'camera' | 'rules' | 'calibration'>('camera');
   const [newCamName, setNewCamName] = useState('');
   const [newCamUrl, setNewCamUrl] = useState('');
   
-  // Auth Modal States
+  // Auth Modal
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [cameraBrand, setCameraBrand] = useState('hikvision');
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   
-  // ROI Drawing States
-  const [roiCamId, setRoiCamId] = useState('');
-  const [snapshotTimestamp, setSnapshotTimestamp] = useState(0);
-  const [roisByCam, setRoisByCam] = useState<Record<string, {id: string, target_objects: string[], points: number[][] }[]>>({});
+  // Rules (ROI & Tripwires) States
+  const [selectedCamId, setSelectedCamId] = useState('');
+  const [rulesByCam, setRulesByCam] = useState<Record<string, Rule[]>>({});
+  const [currentRuleType, setCurrentRuleType] = useState<string>('intrusion');
+  const [currentRuleName, setCurrentRuleName] = useState('');
+  const [currentThreshold, setCurrentThreshold] = useState(15);
   const [currentPoints, setCurrentPoints] = useState<number[][]>([]);
-  const [drawing, setDrawing] = useState(false);
-  const [showLabelModal, setShowLabelModal] = useState(false);
-  const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
-  const [availableLabels, setAvailableLabels] = useState<string[]>(['person', 'pallet', 'agv', 'amr', 'rack']);
+  const [isDrawing, setIsDrawing] = useState(false);
+
+  // Calibration States
+  const [calibCamId, setCalibCamId] = useState('');
+  const [calibSrcPoints, setCalibSrcPoints] = useState<number[][]>([]);
+  const [calibStatus, setCalibStatus] = useState<string>('');
 
   const { t } = useLanguage();
 
   const fetchCameras = () => {
     fetch('/api/backend/camera/list')
-      .then(res => res.json())
+      .then(res => (res.ok ? res.json() : null))
       .then(data => {
+        if (!data) return;
         setCameras(data.cameras || []);
-        setRoisByCam(prev => {
-          const updated = { ...prev };
-          (data.cameras || []).forEach((c: any) => {
-            if (!updated[c.id]) updated[c.id] = c.rois || [];
-          });
-          return updated;
-        });
+        if (data.cameras && data.cameras.length > 0) {
+          if (!selectedCamId) setSelectedCamId(data.cameras[0].id);
+          if (!calibCamId) setCalibCamId(data.cameras[0].id);
+        }
       })
       .catch(err => console.error("Error fetching cameras:", err));
   };
 
-  const fetchLabels = () => {
-    fetch('/api/backend/labels')
-      .then(res => res.json())
-      .then(data => {
-        if (data.labels) setAvailableLabels(data.labels);
-      })
-      .catch(err => console.error("Error fetching labels:", err));
-  };
-
   useEffect(() => {
     fetchCameras();
-    fetchLabels();
-    const interval = setInterval(fetchCameras, 5000);
-    return () => clearInterval(interval);
   }, []);
 
+  // Fetch rules for selected camera
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (activeTab !== 'roi' || !roiCamId) return;
-      
-      const key = e.key.toLowerCase();
-      
-      if (key === 'r') {
-        // Hoàn tác điểm vừa vẽ
-        setCurrentPoints(prev => prev.slice(0, -1));
-      } else if (key === 's') {
-        // Mở modal chọn nhãn HOẶC lưu nhãn
-        if (drawing && currentPoints.length >= 3 && !showLabelModal) {
-          handleSaveShape();
-        } else if (showLabelModal) {
-          handleSaveROI();
-        }
-      } else if (key === 'q') {
-        // Xóa tất cả ROI
-        if (!showLabelModal) {
-          setRoisByCam(prev => ({ ...prev, [roiCamId]: [] }));
-          setCurrentPoints([]);
-        }
-      } else if (key === 'enter') {
-        // Hoàn thành hoặc lưu nhãn
-        if (!showLabelModal) {
-          handleEnter();
-        } else {
-          handleSaveROI();
-        }
-      }
-    };
-    
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTab, roiCamId, drawing, currentPoints, showLabelModal, roisByCam, selectedLabels]);
+    if (selectedCamId) {
+      fetch(`/api/backend/camera/${selectedCamId}/rules`)
+        .then(res => (res.ok ? res.json() : null))
+        .then(data => {
+          if (data?.rules) {
+            setRulesByCam(prev => ({ ...prev, [selectedCamId]: data.rules }));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [selectedCamId]);
 
   const handleAddCamera = (e: React.FormEvent) => {
     e.preventDefault();
@@ -110,24 +88,15 @@ export default function BuildingPage() {
   };
 
   const handleApplyCameraAuth = async () => {
-    if (cameraBrand !== 'custom' && (!authUsername || !authPassword)) {
-      alert("Vui lòng nhập đầy đủ tài khoản và mật khẩu");
-      return;
-    }
-    if (cameraBrand === 'custom' && !newCamUrl.startsWith("rtsp://")) {
-      alert("Vui lòng nhập đường dẫn RTSP hợp lệ (bắt đầu bằng rtsp://) ở ô IP Address ngoài màn hình chính.");
-      return;
-    }
-    
-    // Construct the RTSP URL
+    const uEnc = encodeURIComponent(authUsername);
+    const pEnc = encodeURIComponent(authPassword);
     let fullRtspUrl = "";
     if (cameraBrand === 'custom') {
       fullRtspUrl = newCamUrl;
     } else if (cameraBrand === 'dahua') {
-      fullRtspUrl = `rtsp://${authUsername}:${authPassword}@${newCamUrl}:554/cam/realmonitor?channel=1&subtype=0`;
+      fullRtspUrl = `rtsp://${uEnc}:${pEnc}@${newCamUrl}:554/cam/realmonitor?channel=1&subtype=0`;
     } else {
-      // hikvision
-      fullRtspUrl = `rtsp://${authUsername}:${authPassword}@${newCamUrl}:554/Streaming/Channels/101`;
+      fullRtspUrl = `rtsp://${uEnc}:${pEnc}@${newCamUrl}:554/Streaming/Channels/101`;
     }
 
     try {
@@ -145,7 +114,7 @@ export default function BuildingPage() {
         fetchCameras();
       } else {
         const errData = await res.json().catch(() => null);
-        alert(errData?.detail || "Thông tin không chính xác");
+        alert(errData?.detail || "Lỗi thêm camera");
       }
     } catch (err) {
       console.error("Failed to add camera", err);
@@ -154,405 +123,503 @@ export default function BuildingPage() {
 
   const handleDeleteCamera = async (id: string) => {
     try {
-      const res = await fetch(`/api/backend/camera/${id}`, {
-        method: 'DELETE'
-      });
+      const res = await fetch(`/api/backend/camera/${id}`, { method: 'DELETE' });
       if (res.ok) fetchCameras();
     } catch (err) {
       console.error("Failed to delete camera", err);
     }
   };
 
-  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>, camId: string) => {
-    if (!drawing || roiCamId !== camId) return;
-    
-    // Sử dụng offsetX / offsetY để lấy tọa độ chuột chính xác trên thẻ img
-    const x = e.nativeEvent.offsetX / e.currentTarget.offsetWidth;
-    const y = e.nativeEvent.offsetY / e.currentTarget.offsetHeight;
-    
-    setCurrentPoints([...currentPoints, [x, y]]);
-  };
-
-  const handleSaveShape = () => {
-    if (currentPoints.length < 3) {
-      alert("Cần ít nhất 3 điểm để tạo thành một vùng!");
+  // Rule Save
+  const handleSaveCurrentRule = async () => {
+    const minPts = currentRuleType === 'tripwire' ? 2 : 3;
+    if (currentPoints.length < minPts) {
+      alert(`Quy tắc ${currentRuleType} cần ít nhất ${minPts} điểm!`);
       return;
     }
-    // Mở modal để chọn nhãn cho ROI này
-    setShowLabelModal(true);
-  };
 
-  const handleSaveROI = () => {
-    if (!roiCamId) return;
-    const currentRois = roisByCam[roiCamId] || [];
-    const newRoi = {
-      id: `roi_${currentRois.length + 1}`,
-      target_objects: selectedLabels.length > 0 ? selectedLabels : (availableLabels.length > 0 ? [availableLabels[0]] : []),
-      points: currentPoints
+    const currentRules = rulesByCam[selectedCamId] || [];
+    const newRule: Rule = {
+      id: `rule_${Date.now().toString().slice(-4)}`,
+      type: currentRuleType,
+      name: currentRuleName || `${currentRuleType.toUpperCase()} #${currentRules.length + 1}`,
+      points: currentPoints,
+      threshold: currentThreshold
     };
-    setRoisByCam({ ...roisByCam, [roiCamId]: [...currentRois, newRoi] });
-    
-    // Reset current shape but keep drawing mode active
-    setCurrentPoints([]);
-    setSelectedLabels([]);
-    setShowLabelModal(false);
-  };
 
-  const handleEnter = async () => {
-    if (currentPoints.length >= 3) {
-      alert("Bạn đang vẽ dở một vùng, hãy ấn S để lưu nó trước khi hoàn thành.");
-      return;
-    }
-    const currentRois = roisByCam[roiCamId] || [];
-    if (currentRois.length === 0) {
-      alert("Vui lòng vẽ và lưu ít nhất 1 vùng ROI.");
-      return;
-    }
-    
-    // Thoát chế độ vẽ và gửi lên backend
-    setDrawing(false);
-    
+    const updatedRules = [...currentRules, newRule];
+    setRulesByCam({ ...rulesByCam, [selectedCamId]: updatedRules });
+    setCurrentPoints([]);
+    setIsDrawing(false);
+    setCurrentRuleName('');
+
+    // Save to backend
     try {
-      const res = await fetch(`/api/backend/camera/${roiCamId}/roi`, {
+      await fetch(`/api/backend/camera/${selectedCamId}/rules`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rois: currentRois })
+        body: JSON.stringify({ rules: updatedRules })
       });
-      if (res.ok) {
-        alert("Đã lưu tọa độ và gửi nhãn về cho Model xử lý thành công!");
-      }
     } catch (err) {
-      console.error("Failed to apply ROIs", err);
+      console.error("Error saving rules:", err);
     }
   };
 
-  const handleLabelToggle = (label: string) => {
-    if (selectedLabels.includes(label)) {
-      setSelectedLabels(selectedLabels.filter(l => l !== label));
-    } else {
-      setSelectedLabels([...selectedLabels, label]);
+  const handleDeleteRule = async (ruleId: string) => {
+    const currentRules = rulesByCam[selectedCamId] || [];
+    const updated = currentRules.filter(r => r.id !== ruleId);
+    setRulesByCam({ ...rulesByCam, [selectedCamId]: updated });
+    try {
+      await fetch(`/api/backend/camera/${selectedCamId}/rules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: updated })
+      });
+    } catch (err) {}
+  };
+
+  // Calibration Calculation
+  const handleSaveCalibration = async () => {
+    if (calibSrcPoints.length !== 4) {
+      alert("Vui lòng chọn đúng 4 điểm góc chuẩn trên khung hình camera!");
+      return;
+    }
+
+    // Default floor plan corner mapping (0,0), (1,0), (1,1), (0,1)
+    const dstPoints = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]];
+
+    try {
+      const res = await fetch(`/api/backend/camera/${calibCamId}/calibration`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ src_points: calibSrcPoints, dst_points: dstPoints })
+      });
+      if (res.ok) {
+        setCalibStatus("Hiệu chỉnh ma trận Homography thành công!");
+        setCalibSrcPoints([]);
+      } else {
+        alert("Không thể tính ma trận Homography từ 4 điểm này.");
+      }
+    } catch (err) {
+      console.error(err);
     }
   };
 
   return (
-    <>
-      <div className="sub-header">
-        <div className="sub-tabs">
-          <button className={`sub-tab ${activeTab === 'camera' ? 'active' : ''}`} onClick={() => setActiveTab('camera')}>
-            {t.building.cameraSetting}
+    <div style={{ backgroundColor: '#f8fafc', minHeight: 'calc(100vh - 84px)', padding: '24px' }}>
+      <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        
+        {/* Navigation Tabs */}
+        <div style={{ display: 'flex', gap: '12px', borderBottom: '1px solid #e2e8f0', paddingBottom: '16px', marginBottom: '24px' }}>
+          <button
+            onClick={() => setActiveTab('camera')}
+            style={{
+              padding: '10px 20px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '15px',
+              background: activeTab === 'camera' ? '#3b82f6' : 'white',
+              color: activeTab === 'camera' ? 'white' : '#64748b'
+            }}
+          >
+            Quản lý Camera ({cameras.length})
           </button>
-          <button className={`sub-tab ${activeTab === 'roi' ? 'active' : ''}`} onClick={() => setActiveTab('roi')}>
-            {t.building.roiSetting}
+          <button
+            onClick={() => setActiveTab('rules')}
+            style={{
+              padding: '10px 20px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '15px',
+              background: activeTab === 'rules' ? '#3b82f6' : 'white',
+              color: activeTab === 'rules' ? 'white' : '#64748b'
+            }}
+          >
+            Cấu hình Phân tích Hành vi (ROI / Tripwire)
+          </button>
+          <button
+            onClick={() => setActiveTab('calibration')}
+            style={{
+              padding: '10px 20px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '15px',
+              background: activeTab === 'calibration' ? '#3b82f6' : 'white',
+              color: activeTab === 'calibration' ? 'white' : '#64748b'
+            }}
+          >
+            Camera Calibration (2D $\to$ 3D Floor Map)
           </button>
         </div>
-      </div>
 
-      <div className="building-container">
-        {activeTab === 'camera' ? (
-        <>
-          <div className="card-fms">
-            <h2 style={{ fontSize: '22px', marginBottom: '24px', color: '#334155' }}>{t.building.registerTitle}</h2>
-            <form onSubmit={handleAddCamera} style={{ display: 'flex', gap: '24px', alignItems: 'flex-end' }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', marginBottom: '8px', fontSize: '16px', color: '#64748b', fontWeight: '500' }}>{t.building.camNameLabel}</label>
-                <input 
-                  type="text" 
-                  value={newCamName}
-                  onChange={(e) => setNewCamName(e.target.value)}
-                  placeholder={t.building.camNamePlaceholder}
-                  className="input-fms"
-                  style={{ fontSize: '18px', padding: '14px 18px' }}
-                />
-              </div>
-              <div style={{ flex: 2 }}>
-                <label style={{ display: 'block', marginBottom: '8px', fontSize: '16px', color: '#64748b', fontWeight: '500' }}>IP Address</label>
-                <input 
-                  type="text" 
-                  value={newCamUrl}
-                  onChange={(e) => setNewCamUrl(e.target.value)}
-                  placeholder="e.g. 192.168.1.100"
-                  className="input-fms"
-                  style={{ fontSize: '18px', padding: '14px 18px' }}
-                />
-              </div>
-              <button type="submit" className="btn-fms-primary" style={{ fontSize: '18px', padding: '14px 32px' }}>
-                {t.building.addStreamBtn}
-              </button>
-            </form>
-          </div>
-
-          <div className="card-fms" style={{ padding: '0', overflow: 'hidden' }}>
-            <div style={{ padding: '24px 32px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
-              <h2 style={{ fontSize: '20px', color: '#334155', margin: 0 }}>{t.building.activeCameras}</h2>
-            </div>
-            <table className="table-fms">
-              <thead>
-                <tr>
-                  <th>{t.building.colId}</th>
-                  <th>{t.building.colName}</th>
-                  <th>{t.building.colUrl}</th>
-                  <th>{t.building.colStatus}</th>
-                  <th>{t.building.colAction}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cameras.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} style={{ padding: '48px', textAlign: 'center', color: '#94a3b8', fontSize: '18px' }}>
-                      {t.building.noCameras}
-                    </td>
-                  </tr>
-                ) : cameras.map(cam => (
-                  <tr key={cam.id}>
-                    <td style={{ color: '#64748b', fontSize: '16px' }}>#{cam.id.slice(0,8)}</td>
-                    <td style={{ fontWeight: '600', color: '#334155', fontSize: '18px' }}>{cam.name}</td>
-                    <td style={{ color: '#64748b', fontSize: '16px', fontFamily: 'monospace' }}>{cam.rtsp_url}</td>
-                    <td>
-                      <span style={{ background: '#dcfce3', color: '#16a34a', padding: '6px 12px', borderRadius: '6px', fontSize: '15px', fontWeight: '600' }}>{t.building.statusLive}</span>
-                    </td>
-                    <td>
-                      <button 
-                        onClick={() => handleDeleteCamera(cam.id)}
-                        style={{ padding: '10px 20px', background: 'transparent', color: '#ef4444', border: '1px solid #fca5a5', borderRadius: '6px', cursor: 'pointer', fontSize: '15px', fontWeight: '500' }}
-                        onMouseOver={(e) => { e.currentTarget.style.background = '#fee2e2'; }}
-                        onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                      >
-                        {t.building.btnRemove}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-          {cameras.length === 0 && (
-            <div className="card-fms" style={{ padding: '48px', textAlign: 'center', color: '#64748b', fontSize: '18px' }}>
-              {t.building.noCameras}
-            </div>
-          )}
-          
-          {cameras.map(cam => {
-            const isDrawingThis = roiCamId === cam.id && drawing;
-            const camRois = roisByCam[cam.id] || [];
-            const isExpanded = roiCamId === cam.id;
-            
-            return (
-              <div key={cam.id} className="card-fms" style={{ padding: '24px' }}>
-                <div 
-                  style={{ display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
-                  onClick={() => {
-                    if (!isExpanded) {
-                      setRoiCamId(cam.id);
-                      setDrawing(false);
-                      setCurrentPoints([]);
-                      setSnapshotTimestamp(Date.now());
-                    } else {
-                      setRoiCamId('');
-                      setDrawing(false);
-                      setCurrentPoints([]);
-                    }
-                  }}
-                >
-                  <h3 style={{ fontSize: '20px', fontWeight: 'bold', color: '#334155', margin: 0 }}>
-                    {cam.name} {isExpanded ? '▼' : '▶'}
-                  </h3>
-                  
-                  {isExpanded && (
-                    <div style={{ display: 'flex', gap: '12px' }} onClick={e => e.stopPropagation()}>
-                      <button 
-                        className="btn-fms-secondary" 
-                        onClick={() => setSnapshotTimestamp(Date.now())}
-                        style={{ padding: '8px 16px', fontSize: '14px' }}
-                      >
-                        Refresh Image
-                      </button>
-                      <button 
-                        className="btn-fms-primary"
-                        onClick={() => { setDrawing(true); setCurrentPoints([]); }}
-                        style={{ padding: '8px 16px', background: '#3b82f6', fontSize: '14px' }}
-                      >
-                        + Vẽ ROI Mới
-                      </button>
-                      <button 
-                        className="btn-fms-primary"
-                        onClick={handleEnter}
-                        style={{ padding: '8px 16px', background: '#10b981', fontSize: '14px' }}
-                      >
-                        Hoàn Thành (Enter)
-                      </button>
-                    </div>
-                  )}
+        {/* TAB 1: CAMERA MANAGEMENT */}
+        {activeTab === 'camera' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div style={{ background: 'white', borderRadius: '12px', padding: '24px', border: '1px solid #e2e8f0' }}>
+              <h2 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b', marginBottom: '16px' }}>Đăng ký Luồng Camera Mới</h2>
+              <form onSubmit={handleAddCamera} style={{ display: 'flex', gap: '16px', alignItems: 'flex-end' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', fontSize: '14px', color: '#64748b', marginBottom: '6px' }}>Tên Camera</label>
+                  <input
+                    type="text"
+                    value={newCamName}
+                    onChange={(e) => setNewCamName(e.target.value)}
+                    placeholder="VD: Cổng chính, Kho A..."
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: '1px solid #cbd5e1' }}
+                  />
                 </div>
+                <div style={{ flex: 2 }}>
+                  <label style={{ display: 'block', fontSize: '14px', color: '#64748b', marginBottom: '6px' }}>IP Address hoặc RTSP URL</label>
+                  <input
+                    type="text"
+                    value={newCamUrl}
+                    onChange={(e) => setNewCamUrl(e.target.value)}
+                    placeholder="192.168.1.100 hoặc rtsp://..."
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: '1px solid #cbd5e1' }}
+                  />
+                </div>
+                <button type="submit" style={{ padding: '10px 24px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 600, cursor: 'pointer' }}>
+                  + Thêm Camera
+                </button>
+              </form>
+            </div>
 
-                {isExpanded && (
-                  <div style={{ position: 'relative', width: '100%', maxWidth: '1000px', margin: '24px auto 0' }}>
-                    <div style={{ marginBottom: '12px', color: '#64748b', fontSize: '15px', display: 'flex', gap: '20px', justifyContent: 'center' }}>
-                      <span><kbd style={{ padding: '4px 8px', background: '#e2e8f0', borderRadius: '4px', color: '#334155', fontWeight: 'bold' }}>R</kbd> Hoàn tác</span>
-                      <span><kbd style={{ padding: '4px 8px', background: '#e2e8f0', borderRadius: '4px', color: '#334155', fontWeight: 'bold' }}>S</kbd> Lưu</span>
-                      <span><kbd style={{ padding: '4px 8px', background: '#e2e8f0', borderRadius: '4px', color: '#334155', fontWeight: 'bold' }}>Q</kbd> Delete</span>
-                    </div>
-                    {/* Bỏ fixed height để ảnh tự giữ đúng tỷ lệ thực (aspect ratio), đảm bảo tọa độ không bị sai lệch */}
-                    <div style={{ position: 'relative', width: '100%', border: isDrawingThis ? '2px solid #3b82f6' : '2px solid #e2e8f0', borderRadius: '8px', overflow: 'hidden' }}>
-                      <img 
-                        src={`/api/backend/camera/${cam.id}/snapshot?t=${snapshotTimestamp}`} 
-                        style={{ width: '100%', display: 'block' }} 
-                        draggable={false}
-                        alt="Camera Snapshot"
-                      />
-                      <svg 
-                        viewBox="0 0 1 1"
-                        preserveAspectRatio="none"
-                        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', cursor: isDrawingThis ? 'crosshair' : 'default' }} 
-                        onClick={(e) => {
-                          if (!drawing || roiCamId !== cam.id) return;
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          const x = (e.clientX - rect.left) / rect.width;
-                          const y = (e.clientY - rect.top) / rect.height;
-                          setCurrentPoints([...currentPoints, [x, y]]);
-                        }}
-                      >
-                        {camRois.map((roi, idx) => (
-                          <g key={idx}>
-                            <polygon points={roi.points.map(p => `${p[0]},${p[1]}`).join(' ')} fill="rgba(59, 130, 246, 0.3)" stroke="#3b82f6" strokeWidth="0.003" />
-                            <text x={roi.points[0][0]} y={roi.points[0][1]} fill="#fff" fontSize="0.03" fontWeight="bold" stroke="#000" strokeWidth="0.001">{roi.id} ({roi.target_objects.join(',')})</text>
-                          </g>
-                        ))}
-                        {isDrawingThis && currentPoints.length > 0 && (
-                          <polyline points={currentPoints.map(p => `${p[0]},${p[1]}`).join(' ')} fill="none" stroke="#ef4444" strokeWidth="0.003" />
-                        )}
-                        {isDrawingThis && currentPoints.length > 0 && (
-                          <circle cx={currentPoints[currentPoints.length - 1][0]} cy={currentPoints[currentPoints.length - 1][1]} r="0.005" fill="#ef4444" />
-                        )}
-                      </svg>
-                    </div>
-                  </div>
-                )}
+            <div style={{ background: 'white', borderRadius: '12px', border: '1px solid #e2e8f0', overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
+                <thead>
+                  <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', color: '#64748b' }}>
+                    <th style={{ padding: '16px 20px' }}>ID</th>
+                    <th style={{ padding: '16px 20px' }}>TÊN CAMERA</th>
+                    <th style={{ padding: '16px 20px' }}>RTSP URL</th>
+                    <th style={{ padding: '16px 20px' }}>TRẠNG THÁI</th>
+                    <th style={{ padding: '16px 20px', textAlign: 'right' }}>THAO TÁC</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cameras.map(c => (
+                    <tr key={c.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                      <td style={{ padding: '16px 20px', color: '#64748b', fontFamily: 'monospace' }}>#{c.id}</td>
+                      <td style={{ padding: '16px 20px', fontWeight: 600, color: '#1e293b' }}>{c.name}</td>
+                      <td style={{ padding: '16px 20px', color: '#64748b', fontFamily: 'monospace' }}>{c.rtsp_url}</td>
+                      <td style={{ padding: '16px 20px' }}>
+                        <span style={{ background: '#dcfce7', color: '#16a34a', padding: '4px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: 600 }}>
+                          Live WebRTC
+                        </span>
+                      </td>
+                      <td style={{ padding: '16px 20px', textAlign: 'right' }}>
+                        <button
+                          onClick={() => handleDeleteCamera(c.id)}
+                          style={{ background: 'transparent', border: '1px solid #fca5a5', color: '#ef4444', padding: '6px 14px', borderRadius: '6px', cursor: 'pointer' }}
+                        >
+                          Xóa
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2: RULES (ROI & TRIPWIRES) */}
+        {activeTab === 'rules' && (
+          <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '24px' }}>
+            {/* Left Config Panel */}
+            <div style={{ background: 'white', borderRadius: '12px', padding: '20px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', color: '#64748b', marginBottom: '6px' }}>Chọn Camera</label>
+                <select
+                  value={selectedCamId}
+                  onChange={(e) => setSelectedCamId(e.target.value)}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                >
+                  {cameras.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
               </div>
-            );
-          })}
 
-          {/* Label Selection Modal */}
-          {showLabelModal && (
-            <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
-              <div style={{ background: 'white', padding: '32px', borderRadius: '12px', width: '400px' }}>
-                <h3 style={{ fontSize: '20px', marginBottom: '16px', color: '#1e293b', fontWeight: 'bold' }}>Select Target Objects</h3>
-                <p style={{ color: '#64748b', marginBottom: '24px' }}>Click to select objects to detect in this ROI.</p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '32px' }}>
-                  {availableLabels.map(label => (
-                    <button
-                      key={label}
-                      onClick={() => handleLabelToggle(label)}
-                      style={{
-                        padding: '8px 16px',
-                        borderRadius: '20px',
-                        border: selectedLabels.includes(label) ? '2px solid #3b82f6' : '1px solid #cbd5e1',
-                        background: selectedLabels.includes(label) ? '#eff6ff' : 'white',
-                        color: selectedLabels.includes(label) ? '#1d4ed8' : '#475569',
-                        fontWeight: '600',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      {label}
-                    </button>
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', color: '#64748b', marginBottom: '6px' }}>Loại Quy Tắc Hành Vi</label>
+                <select
+                  value={currentRuleType}
+                  onChange={(e) => { setCurrentRuleType(e.target.value); setCurrentPoints([]); }}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                >
+                  <option value="intrusion">Vùng cấm xâm nhập (Intrusion ROI)</option>
+                  <option value="tripwire">Vạch ảo 2 chiều (Tripwire Line)</option>
+                  <option value="dwell_time">Lảng vãng / Dừng chờ lâu (Dwell Time)</option>
+                  <option value="density">Cảnh báo mật độ đám đông (Crowd Density)</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', color: '#64748b', marginBottom: '6px' }}>Tên Khu Vực / Vạch</label>
+                <input
+                  type="text"
+                  value={currentRuleName}
+                  onChange={(e) => setCurrentRuleName(e.target.value)}
+                  placeholder="VD: Cửa thoát hiểm, Hành lang 1..."
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                />
+              </div>
+
+              {currentRuleType === 'dwell_time' && (
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', color: '#64748b', marginBottom: '6px' }}>Ngưỡng dừng chờ (giây)</label>
+                  <input
+                    type="number"
+                    value={currentThreshold}
+                    onChange={(e) => setCurrentThreshold(Number(e.target.value))}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                  />
+                </div>
+              )}
+
+              {currentRuleType === 'density' && (
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', color: '#64748b', marginBottom: '6px' }}>Số người tối đa (Sức chứa)</label>
+                  <input
+                    type="number"
+                    value={currentThreshold}
+                    onChange={(e) => setCurrentThreshold(Number(e.target.value))}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                  />
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                <button
+                  onClick={() => { setIsDrawing(true); setCurrentPoints([]); }}
+                  style={{ flex: 1, padding: '8px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  {isDrawing ? 'Đang chấm điểm...' : '+ Chấm Tọa Độ'}
+                </button>
+                <button
+                  onClick={handleSaveCurrentRule}
+                  disabled={currentPoints.length === 0}
+                  style={{ flex: 1, padding: '8px', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 600, cursor: 'pointer', opacity: currentPoints.length === 0 ? 0.5 : 1 }}
+                >
+                  Lưu Quy Tắc
+                </button>
+              </div>
+
+              {/* Active Rules List */}
+              <div style={{ marginTop: '16px', borderTop: '1px solid #e2e8f0', paddingTop: '16px' }}>
+                <h4 style={{ fontSize: '13px', color: '#475569', margin: '0 0 10px 0' }}>Quy tắc đã lưu:</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto' }}>
+                  {(rulesByCam[selectedCamId] || []).map(r => (
+                    <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', background: '#f8fafc', borderRadius: '6px', fontSize: '12px' }}>
+                      <div>
+                        <div style={{ fontWeight: 600, color: '#1e293b' }}>{r.name}</div>
+                        <div style={{ color: '#64748b' }}>{r.type}</div>
+                      </div>
+                      <button onClick={() => handleDeleteRule(r.id)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer' }}>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   ))}
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-                  <button className="btn-fms-secondary" onClick={() => { setShowLabelModal(false); setCurrentPoints([]); }}>Cancel</button>
-                  <button className="btn-fms-primary" onClick={handleSaveROI}>Save ROI (S)</button>
-                </div>
               </div>
             </div>
-          )}
-        </div>
-      )}
-    </div>
 
-      {/* Auth Modal for adding Camera */}
-      {showAuthModal && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, 
-          backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1000,
-          display: 'flex', alignItems: 'center', justifyContent: 'center'
-        }}>
-          <form onSubmit={(e) => { e.preventDefault(); handleApplyCameraAuth(); }} style={{ background: 'white', padding: '32px', borderRadius: '12px', width: '400px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
-              <img src="/logo.png" alt="RTC Logo" style={{ height: '32px' }} />
-              <h3 style={{ margin: 0, fontSize: '20px', color: '#1e293b' }}>Xác thực luồng Camera</h3>
+            {/* Right Interactive Canvas */}
+            <div style={{ background: 'white', borderRadius: '12px', padding: '20px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', background: '#0f172a', borderRadius: '8px', overflow: 'hidden' }}>
+                {selectedCamId && (
+                  <iframe
+                    src={`http://localhost:8081/${selectedCamId}/`}
+                    style={{ width: '100%', height: '100%', border: 'none', position: 'absolute', top: 0, left: 0 }}
+                    scrolling="no"
+                  />
+                )}
+
+                {/* SVG Layer for Drawing & Visualizing Rules */}
+                <svg
+                  viewBox="0 0 1 1"
+                  preserveAspectRatio="none"
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', cursor: isDrawing ? 'crosshair' : 'default', zIndex: 10 }}
+                  onClick={(e) => {
+                    if (!isDrawing) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const x = (e.clientX - rect.left) / rect.width;
+                    const y = (e.clientY - rect.top) / rect.height;
+                    setCurrentPoints([...currentPoints, [x, y]]);
+                  }}
+                >
+                  {/* Saved Rules */}
+                  {(rulesByCam[selectedCamId] || []).map(r => {
+                    if (r.type === 'tripwire' && r.points.length >= 2) {
+                      return (
+                        <g key={r.id}>
+                          <line x1={r.points[0][0]} y1={r.points[0][1]} x2={r.points[1][0]} y2={r.points[1][1]} stroke="#10b981" strokeWidth="0.005" />
+                          <circle cx={r.points[0][0]} cy={r.points[0][1]} r="0.008" fill="#10b981" />
+                          <circle cx={r.points[1][0]} cy={r.points[1][1]} r="0.008" fill="#10b981" />
+                          <text x={r.points[0][0]} y={r.points[0][1] - 0.02} fill="#ffffff" fontSize="0.03" fontWeight="bold">
+                            {r.name} (TRIPWIRE)
+                          </text>
+                        </g>
+                      );
+                    } else if (r.points.length >= 3) {
+                      return (
+                        <g key={r.id}>
+                          <polygon points={r.points.map(p => `${p[0]},${p[1]}`).join(' ')} fill="rgba(239, 68, 68, 0.25)" stroke="#ef4444" strokeWidth="0.004" />
+                          <text x={r.points[0][0]} y={r.points[0][1] - 0.02} fill="#ffffff" fontSize="0.03" fontWeight="bold">
+                            {r.name} ({r.type.toUpperCase()})
+                          </text>
+                        </g>
+                      );
+                    }
+                    return null;
+                  })}
+
+                  {/* Currently Drawing Points */}
+                  {isDrawing && currentPoints.length > 0 && (
+                    <>
+                      {currentPoints.map((pt, idx) => (
+                        <circle key={idx} cx={pt[0]} cy={pt[1]} r="0.008" fill="#3b82f6" stroke="#ffffff" strokeWidth="0.002" />
+                      ))}
+                      <polyline points={currentPoints.map(p => `${p[0]},${p[1]}`).join(' ')} fill="none" stroke="#3b82f6" strokeWidth="0.004" strokeDasharray="0.01" />
+                    </>
+                  )}
+                </svg>
+              </div>
             </div>
+          </div>
+        )}
+
+        {/* TAB 3: CAMERA CALIBRATION (2D-to-Floor-Map) */}
+        {activeTab === 'calibration' && (
+          <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '24px' }}>
+            <div style={{ background: 'white', borderRadius: '12px', padding: '20px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: 'bold', color: '#1e293b', margin: 0 }}>Hiệu chỉnh Tọa độ Không gian</h3>
+              <p style={{ fontSize: '13px', color: '#64748b', lineHeight: 1.5 }}>
+                Bấm 4 điểm góc trên mặt sàn của camera theo thứ tự (Góc trên-trái $\to$ trên-phải $\to$ dưới-phải $\to$ dưới-trái) để hệ thống tự động tính toán ma trận Homography ánh xạ đối tượng lên bản đồ sàn 2D/3D.
+              </p>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', color: '#64748b', marginBottom: '6px' }}>Chọn Camera</label>
+                <select
+                  value={calibCamId}
+                  onChange={(e) => { setCalibCamId(e.target.value); setCalibSrcPoints([]); setCalibStatus(''); }}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                >
+                  {cameras.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+
+              <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '8px', fontSize: '13px' }}>
+                <div style={{ fontWeight: 600, color: '#1e293b', marginBottom: '4px' }}>Số điểm đã chấm: {calibSrcPoints.length} / 4</div>
+                {calibSrcPoints.map((pt, i) => (
+                  <div key={i} style={{ color: '#64748b', fontSize: '11px', fontFamily: 'monospace' }}>
+                    Điểm {i+1}: ({pt[0].toFixed(3)}, {pt[1].toFixed(3)})
+                  </div>
+                ))}
+              </div>
+
+              {calibStatus && (
+                <div style={{ padding: '10px', background: '#ecfdf5', color: '#047857', borderRadius: '6px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <CheckCircle2 size={16} /> {calibStatus}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: 'auto' }}>
+                <button
+                  onClick={() => { setCalibSrcPoints([]); setCalibStatus(''); }}
+                  style={{ flex: 1, padding: '10px', background: 'white', border: '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
+                >
+                  Chấm lại
+                </button>
+                <button
+                  onClick={handleSaveCalibration}
+                  disabled={calibSrcPoints.length !== 4}
+                  style={{ flex: 1, padding: '10px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, opacity: calibSrcPoints.length !== 4 ? 0.5 : 1 }}
+                >
+                  Tính Ma Trận
+                </button>
+              </div>
+            </div>
+
+            {/* Calibration Click Canvas */}
+            <div style={{ background: 'white', borderRadius: '12px', padding: '20px', border: '1px solid #e2e8f0' }}>
+              <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', background: '#0f172a', borderRadius: '8px', overflow: 'hidden' }}>
+                {calibCamId && (
+                  <iframe
+                    src={`http://localhost:8081/${calibCamId}/`}
+                    style={{ width: '100%', height: '100%', border: 'none', position: 'absolute', top: 0, left: 0 }}
+                    scrolling="no"
+                  />
+                )}
+
+                <svg
+                  viewBox="0 0 1 1"
+                  preserveAspectRatio="none"
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', cursor: 'crosshair', zIndex: 10 }}
+                  onClick={(e) => {
+                    if (calibSrcPoints.length >= 4) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const x = (e.clientX - rect.left) / rect.width;
+                    const y = (e.clientY - rect.top) / rect.height;
+                    setCalibSrcPoints([...calibSrcPoints, [x, y]]);
+                  }}
+                >
+                  {calibSrcPoints.map((pt, idx) => (
+                    <g key={idx}>
+                      <circle cx={pt[0]} cy={pt[1]} r="0.01" fill="#f59e0b" stroke="#ffffff" strokeWidth="0.002" />
+                      <text x={pt[0] + 0.015} y={pt[1] + 0.015} fill="#f59e0b" fontSize="0.035" fontWeight="bold" stroke="#000000" strokeWidth="0.001">
+                        P{idx + 1}
+                      </text>
+                    </g>
+                  ))}
+                  {calibSrcPoints.length >= 2 && (
+                    <polygon points={calibSrcPoints.map(p => `${p[0]},${p[1]}`).join(' ')} fill="rgba(245, 158, 11, 0.2)" stroke="#f59e0b" strokeWidth="0.003" />
+                  )}
+                </svg>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* Auth Modal for RTSP Credentials */}
+      {showAuthModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <form onSubmit={(e) => { e.preventDefault(); handleApplyCameraAuth(); }} style={{ background: 'white', padding: '32px', borderRadius: '12px', width: '400px' }}>
+            <h3 style={{ margin: '0 0 20px 0', fontSize: '18px', color: '#1e293b' }}>Xác thực luồng RTSP</h3>
             
             <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Hãng Camera</label>
-              <select 
-                value={cameraBrand} 
-                onChange={(e) => setCameraBrand(e.target.value)}
-                className="input-fms"
-                style={{ width: '100%', padding: '10px 14px', fontSize: '15px' }}
-              >
+              <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', color: '#64748b' }}>Hãng Camera</label>
+              <select value={cameraBrand} onChange={(e) => setCameraBrand(e.target.value)} style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
                 <option value="hikvision">Hikvision</option>
                 <option value="dahua">Dahua</option>
-                <option value="custom">Khác (Nhập full link RTSP)</option>
+                <option value="custom">Tùy chỉnh (Link RTSP đầy đủ)</option>
               </select>
             </div>
-            
+
             {cameraBrand !== 'custom' ? (
               <>
                 <div style={{ marginBottom: '16px' }}>
-                  <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Tài khoản</label>
-                  <input 
-                    type="text" 
-                    value={authUsername}
-                    onChange={(e) => setAuthUsername(e.target.value)}
-                    className="input-fms"
-                    autoFocus
-                  />
+                  <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', color: '#64748b' }}>Tài khoản</label>
+                  <input type="text" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
                 </div>
-                
-                <div style={{ marginBottom: '32px' }}>
-                  <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#64748b', fontWeight: '500' }}>Mật khẩu</label>
+                <div style={{ marginBottom: '24px' }}>
+                  <label style={{ display: 'block', marginBottom: '6px', fontSize: '13px', color: '#64748b' }}>Mật khẩu</label>
                   <div style={{ position: 'relative' }}>
-                    <input 
-                      type={showPassword ? "text" : "password"} 
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                      className="input-fms"
-                      style={{ paddingRight: '40px' }}
-                    />
-                    <button type="button" onClick={() => setShowPassword(!showPassword)} style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}>
-                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    <input type={showPassword ? "text" : "password"} value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+                    <button type="button" onClick={() => setShowPassword(!showPassword)} style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}>
+                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
                   </div>
                 </div>
               </>
             ) : (
-              <div style={{ marginBottom: '32px', padding: '16px', background: '#eff6ff', borderRadius: '8px', border: '1px solid #bfdbfe' }}>
-                <p style={{ margin: 0, fontSize: '14px', color: '#1e3a8a', lineHeight: '1.5' }}>
-                  Hệ thống sẽ lấy nguyên đường dẫn bạn vừa nhập ở ô <strong>IP Address</strong> bên ngoài màn hình chính để chạy luồng RTSP. Vui lòng đảm bảo link đã bắt đầu bằng <code style={{background:'#dbeafe', padding:'2px 4px', borderRadius:'4px'}}>rtsp://</code> và có sẵn tài khoản/mật khẩu nếu cần.
-                </p>
+              <div style={{ marginBottom: '24px', padding: '12px', background: '#eff6ff', borderRadius: '6px', fontSize: '13px', color: '#1e3a8a' }}>
+                Sử dụng nguyên bản đường dẫn RTSP bạn vừa nhập ở màn hình trước.
               </div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '16px' }}>
-              <button 
-                type="button"
-                onClick={() => setShowAuthModal(false)}
-                style={{ padding: '10px 24px', borderRadius: '8px', border: '1px solid #cbd5e1', background: 'white', cursor: 'pointer', fontWeight: '600', color: '#475569' }}
-              >
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button type="button" onClick={() => setShowAuthModal(false)} style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #cbd5e1', background: 'white', cursor: 'pointer' }}>
                 Hủy
               </button>
-              <button 
-                type="submit"
-                className="btn-fms-primary"
-                style={{ padding: '10px 24px' }}
-              >
-                Apply
+              <button type="submit" style={{ padding: '8px 20px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', fontWeight: 600, cursor: 'pointer' }}>
+                Xác nhận
               </button>
             </div>
           </form>
         </div>
       )}
-    </>
+    </div>
   );
 }
