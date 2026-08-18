@@ -1,0 +1,6 @@
+[property]
+enable=1
+config-width=1280
+config-height=720
+osd-mode=2
+display-font-size=12
