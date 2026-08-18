@@ -19,8 +19,9 @@ from core.behavior_analytics import behavior_engine
 from core.database import db_manager
 
 def sanitize_rtsp_url(url: str) -> str:
-    """Safely URL-encodes credentials and removes invalid whitespace in RTSP URLs."""
-    url = url.strip().replace(" ", "")
+    """Removes all whitespace and invalid characters from RTSP URL"""
+    import re
+    url = re.sub(r'\s+', '', url).replace("%20", "")
     if not url.startswith("rtsp://"):
         return url
     try:
@@ -56,7 +57,7 @@ class DeepStreamManager:
         self.cam_id_to_source_id: Dict[str, int] = {}
         self.source_id_to_cam_id: Dict[int, str] = {}
         self.next_source_id = 0
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.is_running = False
         self.pipeline = None
         
@@ -154,6 +155,8 @@ class DeepStreamManager:
             print(f"[DeepStreamManager] Note: Adding source {cam_id} in standalone mode")
             return True
             
+        print(f"DEBUG ADD_SOURCE CALLED for {cam_id}", flush=True)
+            
         with self.lock:
             if cam_id in self.cam_id_to_source_id:
                 print(f"[DeepStreamManager] Camera {cam_id} is already in pipeline.")
@@ -165,28 +168,31 @@ class DeepStreamManager:
             
             self.cam_id_to_source_id[cam_id] = source_id
             self.source_id_to_cam_id[source_id] = cam_id
-            
-            GLib.idle_add(self._add_source_glib, cam_id, clean_url, source_id)
+            if not self.is_running:
+                self._add_source_glib(cam_id, clean_url, source_id)
+            else:
+                GLib.idle_add(self._add_source_glib, cam_id, clean_url, source_id)
             return True
 
     def _add_source_glib(self, cam_id, clean_url, source_id):
-        bin_name = f"source-bin-{source_id}"
-        source_bin = Gst.ElementFactory.make("nvurisrcbin", bin_name)
+        print(f"[DeepStreamManager] Inside _add_source_glib for {cam_id}", flush=True)
+        source_bin = Gst.ElementFactory.make("nvurisrcbin", f"uri-decode-bin-{source_id}")
         if not source_bin:
             print(f"[DeepStreamManager] Failed to create nvurisrcbin for {cam_id}")
             return False
             
         source_bin.set_property("uri", clean_url)
         source_bin.set_property("source-id", source_id)
-        source_bin.set_property("rtsp-reconnect-interval", 5)
+        source_bin.set_property("rtsp-reconnect-interval", 0)
         if source_bin.find_property("select-rtp-protocol"):
             source_bin.set_property("select-rtp-protocol", 4)
         
         source_bin.connect("pad-added", self._cb_newpad, source_id)
-        source_bin.connect("child-added", self._cb_child_added)
+        # source_bin.connect("child-added", self._cb_child_added)
         
         self.pipeline.add(source_bin)
-        source_bin.sync_state_with_parent()
+        if self.is_running:
+            source_bin.sync_state_with_parent()
         
         with self.lock:
             self.sources[source_id] = {
@@ -208,14 +214,18 @@ class DeepStreamManager:
                 obj.set_property("latency", 100)
 
     def _cb_newpad(self, decodebin, decoder_src_pad, source_id):
+        print(f"[DeepStreamManager] pad-added signal received for source {source_id}", flush=True)
         caps = decoder_src_pad.get_current_caps()
         if not caps:
             caps = decoder_src_pad.query_caps()
         if caps and caps.get_size() > 0:
             gst_struct = caps.get_structure(0)
             name = gst_struct.get_name()
+            print(f"[DeepStreamManager] Pad caps: {name}", flush=True)
             if "video" not in name:
                 return
+        else:
+            print(f"[DeepStreamManager] Warning: No caps on pad for source {source_id}", flush=True)
 
         pad_name = f"sink_{source_id}"
         sink_pad = self.muxer.get_static_pad(pad_name)
